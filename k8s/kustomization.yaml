@@ -13,6 +13,6 @@ resources:
 
 images:
   - name: registry.digitalocean.com/globalcomix/claude-agent-server
-    newTag: latest
+    newTag: "2026.01.27"
   - name: registry.digitalocean.com/globalcomix/claude-agent-worker
-    newTag: latest
+    newTag: "2026.01.27"
