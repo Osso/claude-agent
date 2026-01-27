@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
 
     // Clone repository (inject token into URL for authentication)
     let auth_clone_url = inject_git_credentials(&payload.clone_url, &gitlab_token);
-    clone_repo(&auth_clone_url, &payload.source_branch, &work_dir)?;
+    clone_repo(&auth_clone_url, &payload.source_branch, &payload.target_branch, &work_dir)?;
 
     // Get diff
     let diff = get_diff(&work_dir, &payload.target_branch)?;
@@ -140,7 +140,7 @@ fn inject_git_credentials(url: &str, token: &str) -> String {
     }
 }
 
-fn clone_repo(clone_url: &str, branch: &str, target: &PathBuf) -> Result<()> {
+fn clone_repo(clone_url: &str, branch: &str, target_branch: &str, target: &PathBuf) -> Result<()> {
     info!(url = %clone_url, branch = %branch, "Cloning repository");
 
     let status = Command::new("git")
@@ -155,10 +155,10 @@ fn clone_repo(clone_url: &str, branch: &str, target: &PathBuf) -> Result<()> {
 
     // Fetch target branch for diff comparison
     let status = Command::new("git")
-        .args(["fetch", "origin", "HEAD"])
+        .args(["fetch", "origin", target_branch])
         .current_dir(target)
         .status()
-        .context("Failed to fetch origin")?;
+        .context("Failed to fetch target branch")?;
 
     if !status.success() {
         bail!("git fetch failed with status {}", status);
