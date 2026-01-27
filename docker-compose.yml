@@ -13,5 +13,3 @@ services:
 
   valkey:
     image: valkey/valkey:8-alpine
-    ports:
-      - "6379:6379"

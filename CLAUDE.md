@@ -26,11 +26,15 @@ kubectl get pods -n claude-agent # Check pod status
 kubectl logs -n claude-agent -l app=claude-agent-server -f  # Server logs
 ```
 
-### CLI (after building)
+### CLI (symlinked to ~/.local/bin/claude-agent)
 ```bash
-./target/release/claude-agent stats           # Queue statistics
-./target/release/claude-agent list --failed   # List failed jobs
-./target/release/claude-agent retry <id>      # Retry failed job
+claude-agent info -p Globalcomix/gc -m <iid> --token "$TOKEN"  # Show MR info
+claude-agent review -p Globalcomix/gc -m <iid> --token "$TOKEN"  # Queue review
+claude-agent stats                            # Queue statistics
+claude-agent list-failed                      # List failed items
+claude-agent jobs [-a]                        # List K8s jobs
+claude-agent logs [job-name] [-f] [-n 100]    # Show job logs
+claude-agent retry <id>                       # Retry failed item
 ```
 
 ## Architecture
@@ -67,18 +71,59 @@ GitLab Webhook → Server → Redis Queue → Scheduler → K8s Job (Worker)
 |---------------------|-------------|----------|
 | `REDIS_URL` | Redis connection URL | Server |
 | `WEBHOOK_SECRET` | GitLab webhook token | Server |
+| `API_KEY` | API key for CLI access (defaults to WEBHOOK_SECRET) | Server (optional) |
 | `LISTEN_ADDR` | Server listen address | Server (default: 0.0.0.0:8443) |
 | `GITLAB_TOKEN` | GitLab API token | Worker |
 | `ANTHROPIC_API_KEY` | Anthropic API key | Worker |
 | `REVIEW_PAYLOAD` | Base64-encoded job payload | Worker (set by scheduler) |
+
+### CLI Configuration
+
+The CLI reads configuration from `~/.config/claude-agent/config.toml`:
+
+```toml
+server_url = "https://claude-agent.globalcomixdev.com"
+api_key = "your-api-key-here"
+```
+
+Environment variables override config file values:
+
+| Environment Variable | Description |
+|---------------------|-------------|
+| `CLAUDE_AGENT_URL` | Server URL for HTTP API access |
+| `CLAUDE_AGENT_API_KEY` | API key for authenticating to the server |
+
+## Deployment
+
+### Using deploy.sh (recommended)
+```bash
+./deploy.sh              # Deploy with :latest tag
+./deploy.sh 2026.01.27   # Deploy with specific date tag
+```
+
+This builds and pushes both server and worker images, then restarts the deployment.
+
+### Manual Deployment
+```bash
+# Build and push server
+docker build -f Dockerfile.server -t registry.digitalocean.com/globalcomix/claude-agent-server:latest .
+docker push registry.digitalocean.com/globalcomix/claude-agent-server:latest
+
+# Build and push worker
+docker build -f Dockerfile.worker -t registry.digitalocean.com/globalcomix/claude-agent-worker:latest .
+docker push registry.digitalocean.com/globalcomix/claude-agent-worker:latest
+
+# Restart deployment
+kubectl rollout restart deployment/claude-agent-server -n claude-agent
+kubectl rollout status deployment/claude-agent-server -n claude-agent
+```
 
 ## Development Workflow
 
 1. Make changes to Rust code
 2. Run `cargo test --workspace` to verify
 3. Build Docker images if deploying
-4. Update image tags in `k8s/deployment.yaml` or `k8s/kustomization.yaml`
-5. Commit and push - FluxCD deploys automatically
+4. Run `./deploy.sh` to deploy
 
 ## Adding New Agent Types
 
@@ -109,4 +154,5 @@ curl -X POST http://localhost:8443/webhook/gitlab \
 - Worker runs with `--dangerously-skip-permissions` (isolated in K8s Job)
 - NetworkPolicy restricts egress to GitLab/Anthropic APIs only
 - Commands in `mr_reviewer.rs` are allowlisted for safety
-- Webhook signature verification required
+- Webhook signature verification required (`X-Gitlab-Token` header)
+- API endpoints protected by API key (`Authorization: Bearer <key>` or `X-API-Key` header)
