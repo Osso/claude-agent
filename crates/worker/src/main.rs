@@ -73,8 +73,9 @@ async fn main() -> Result<()> {
     let work_dir = PathBuf::from("/work/repo");
     std::fs::create_dir_all(&work_dir)?;
 
-    // Clone repository
-    clone_repo(&payload.clone_url, &payload.source_branch, &work_dir)?;
+    // Clone repository (inject token into URL for authentication)
+    let auth_clone_url = inject_git_credentials(&payload.clone_url, &gitlab_token);
+    clone_repo(&auth_clone_url, &payload.source_branch, &work_dir)?;
 
     // Get diff
     let diff = get_diff(&work_dir, &payload.target_branch)?;
@@ -127,6 +128,16 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Inject OAuth2 credentials into a git HTTPS URL.
+/// Converts `https://gitlab.com/group/repo.git` to `https://oauth2:TOKEN@gitlab.com/group/repo.git`
+fn inject_git_credentials(url: &str, token: &str) -> String {
+    if let Some(rest) = url.strip_prefix("https://") {
+        format!("https://oauth2:{token}@{rest}")
+    } else {
+        url.to_string()
+    }
 }
 
 fn clone_repo(clone_url: &str, branch: &str, target: &PathBuf) -> Result<()> {
@@ -193,4 +204,34 @@ fn get_changed_files(repo_dir: &PathBuf, target_branch: &str) -> Result<Vec<Stri
         .collect();
 
     Ok(files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_inject_git_credentials() {
+        let url = "https://gitlab.com/group/repo.git";
+        let token = "test-token";
+        let result = inject_git_credentials(url, token);
+        assert_eq!(result, "https://oauth2:test-token@gitlab.com/group/repo.git");
+    }
+
+    #[test]
+    fn test_inject_git_credentials_with_path() {
+        let url = "https://gitlab.com/Globalcomix/gc.git";
+        let token = "glpat-xxx";
+        let result = inject_git_credentials(url, token);
+        assert_eq!(result, "https://oauth2:glpat-xxx@gitlab.com/Globalcomix/gc.git");
+    }
+
+    #[test]
+    fn test_inject_git_credentials_non_https() {
+        let url = "git@gitlab.com:group/repo.git";
+        let token = "test-token";
+        let result = inject_git_credentials(url, token);
+        // SSH URLs should be returned unchanged
+        assert_eq!(result, "git@gitlab.com:group/repo.git");
+    }
 }
