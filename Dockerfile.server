@@ -12,28 +12,15 @@ COPY crates/worker/Cargo.toml crates/worker/
 COPY crates/agents/Cargo.toml crates/agents/
 COPY crates/cli/Cargo.toml crates/cli/
 
-# Create dummy source files to cache dependencies
-RUN mkdir -p crates/core/src crates/claude/src crates/server/src crates/worker/src crates/agents/src crates/cli/src && \
-    echo "pub fn dummy() {}" > crates/core/src/lib.rs && \
-    echo "pub fn dummy() {}" > crates/claude/src/lib.rs && \
-    echo "pub fn dummy() {}" > crates/server/src/lib.rs && \
-    echo "fn main() {}" > crates/server/src/main.rs && \
-    echo "fn main() {}" > crates/worker/src/main.rs && \
-    echo "pub fn dummy() {}" > crates/agents/src/lib.rs && \
-    echo "fn main() {}" > crates/cli/src/main.rs
-
-# Build dependencies only
-RUN cargo build --release --package claude-agent-server && \
-    rm -rf crates/*/src
-
-# Copy actual source
+# Copy source
 COPY crates/ crates/
 
-# Touch source files to invalidate cache
-RUN touch crates/*/src/*.rs
-
-# Build the server
-RUN cargo build --release --package claude-agent-server
+# Build with cache mounts
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo build --release --package claude-agent-server && \
+    cp target/release/claude-agent-server /build/claude-agent-server-bin
 
 # Runtime stage
 FROM debian:bookworm-slim
@@ -48,7 +35,7 @@ RUN groupadd -g 1000 app && \
 
 WORKDIR /app
 
-COPY --from=builder /build/target/release/claude-agent-server /app/
+COPY --from=builder /build/claude-agent-server-bin /app/claude-agent-server
 
 USER app
 
