@@ -1,0 +1,17 @@
+services:
+  server:
+    image: registry.digitalocean.com/globalcomix/claude-agent-server:latest
+    ports:
+      - "8443:8443"
+    environment:
+      - LOG_LEVEL=debug
+      - WEBHOOK_SECRET=test
+      - REDIS_URL=redis://valkey:6379
+      - LISTEN_ADDR=0.0.0.0:8443
+    depends_on:
+      - valkey
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    ports:
+      - "6379:6379"

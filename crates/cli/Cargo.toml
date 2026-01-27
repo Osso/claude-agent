@@ -17,6 +17,11 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
+reqwest = { workspace = true }
+urlencoding = { workspace = true }
+kube = { workspace = true }
+k8s-openapi = { workspace = true }
+futures-util = "0.3"
 
 claude-agent-core = { workspace = true }
 claude-agent-server = { workspace = true }
