@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: claude-agent-server
+  namespace: claude-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: claude-agent-server
+  template:
+    metadata:
+      labels:
+        app: claude-agent-server
+    spec:
+      serviceAccountName: claude-agent-scheduler
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: server
+          image: registry.digitalocean.com/globalcomix/claude-agent-server:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8443
+              protocol: TCP
+          env:
+            - name: REDIS_URL
+              value: "redis://dragonfly.globalcomix.svc:6379"
+            - name: LISTEN_ADDR
+              value: "0.0.0.0:8443"
+            - name: WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: claude-agent-secrets
+                  key: webhook-secret
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5

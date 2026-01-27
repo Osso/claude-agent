@@ -1,0 +1,64 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/claude",
+    "crates/server",
+    "crates/worker",
+    "crates/agents",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Alessio Deiana <adeiana@gmail.com>"]
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web framework
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json"] }
+
+# Redis
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+
+# Kubernetes
+kube = { version = "0.98", features = ["runtime", "client"] }
+k8s-openapi = { version = "0.24", features = ["v1_31"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Utilities
+base64 = "0.22"
+thiserror = "2"
+anyhow = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Internal crates
+claude-agent-core = { path = "crates/core" }
+claude-agent-claude = { path = "crates/claude" }
+claude-agent-server = { path = "crates/server" }
+claude-agent-agents = { path = "crates/agents" }
+
+[profile.release]
+lto = true
+strip = true

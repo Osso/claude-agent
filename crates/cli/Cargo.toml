@@ -1,0 +1,22 @@
+[package]
+name = "claude-agent-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "claude-agent"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+
+claude-agent-core = { workspace = true }
+claude-agent-server = { workspace = true }

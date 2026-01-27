@@ -1,0 +1,53 @@
+# This is a reference template - jobs are created dynamically by the scheduler
+# See crates/server/src/scheduler.rs for the actual job creation code
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: claude-review-{mr_id}-{uuid}
+  namespace: claude-agent
+  labels:
+    app: claude-review
+    queue-id: "{queue_id}"
+spec:
+  ttlSecondsAfterFinished: 3600  # Cleanup after 1 hour
+  backoffLimit: 0                 # No retries
+  template:
+    metadata:
+      labels:
+        app: claude-review
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: worker
+          image: registry.digitalocean.com/globalcomix/claude-agent-worker:latest
+          env:
+            - name: REVIEW_PAYLOAD
+              value: "{base64_encoded_payload}"
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: claude-agent-secrets
+                  key: anthropic-api-key
+            - name: GITLAB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: claude-agent-secrets
+                  key: gitlab-token
+          volumeMounts:
+            - name: workdir
+              mountPath: /work
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+      volumes:
+        - name: workdir
+          emptyDir:
+            sizeLimit: 2Gi

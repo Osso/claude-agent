@@ -1,0 +1,73 @@
+# Build stage
+FROM rust:1.83-bookworm AS builder
+
+WORKDIR /build
+
+# Copy manifests
+COPY Cargo.toml Cargo.lock ./
+COPY crates/core/Cargo.toml crates/core/
+COPY crates/claude/Cargo.toml crates/claude/
+COPY crates/server/Cargo.toml crates/server/
+COPY crates/worker/Cargo.toml crates/worker/
+COPY crates/agents/Cargo.toml crates/agents/
+COPY crates/cli/Cargo.toml crates/cli/
+
+# Create dummy source files to cache dependencies
+RUN mkdir -p crates/core/src crates/claude/src crates/server/src crates/worker/src crates/agents/src crates/cli/src && \
+    echo "pub fn dummy() {}" > crates/core/src/lib.rs && \
+    echo "pub fn dummy() {}" > crates/claude/src/lib.rs && \
+    echo "pub fn dummy() {}" > crates/server/src/lib.rs && \
+    echo "fn main() {}" > crates/server/src/main.rs && \
+    echo "fn main() {}" > crates/worker/src/main.rs && \
+    echo "pub fn dummy() {}" > crates/agents/src/lib.rs && \
+    echo "fn main() {}" > crates/cli/src/main.rs
+
+# Build dependencies only
+RUN cargo build --release --package claude-agent-worker && \
+    rm -rf crates/*/src
+
+# Copy actual source
+COPY crates/ crates/
+
+# Touch source files to invalidate cache
+RUN touch crates/*/src/*.rs
+
+# Build the worker
+RUN cargo build --release --package claude-agent-worker
+
+# Runtime stage with Claude Code
+FROM debian:bookworm-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        git \
+        curl \
+        && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js (required for Claude Code)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Claude Code CLI
+RUN npm install -g @anthropic-ai/claude-code
+
+# Create non-root user
+RUN groupadd -g 1000 app && \
+    useradd -u 1000 -g app -s /bin/bash -m app
+
+WORKDIR /app
+
+COPY --from=builder /build/target/release/claude-agent-worker /app/
+
+# Create work directory
+RUN mkdir -p /work && chown app:app /work
+
+USER app
+
+# Configure git for the app user
+RUN git config --global user.email "claude-agent@globalcomix.com" && \
+    git config --global user.name "Claude Agent"
+
+CMD ["/app/claude-agent-worker"]
