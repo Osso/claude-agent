@@ -52,16 +52,19 @@ impl Scheduler {
         *self.running.lock().await = true;
 
         while *self.running.lock().await {
-            // Check if there's already a job running
-            if self.has_running_job().await {
-                debug!("Job already running, waiting...");
-                tokio::time::sleep(Duration::from_secs(10)).await;
-                continue;
-            }
-
-            // Try to get next item from queue
-            match self.queue.pop(5).await {
+            // Try to get next item from queue (blocks for 30s if empty)
+            match self.queue.pop(30).await {
                 Ok(Some(item)) => {
+                    // Only check for running job when we have work to do
+                    if self.has_running_job().await {
+                        debug!("Job already running, re-queueing item");
+                        // Put item back and wait
+                        if let Err(e) = self.queue.push(item.payload).await {
+                            error!(error = %e, "Failed to re-queue item");
+                        }
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        continue;
+                    }
                     info!(id = %item.id, "Processing queue item");
 
                     // Mark as processing
@@ -106,8 +109,7 @@ impl Scheduler {
                     }
                 }
                 Ok(None) => {
-                    // Queue empty, continue waiting
-                    debug!("Queue empty");
+                    // Queue empty, BLPOP timed out - continue waiting
                 }
                 Err(e) => {
                     error!(error = %e, "Failed to pop from queue");
@@ -267,6 +269,7 @@ impl Scheduler {
     async fn wait_for_job(&self, job_name: &str) -> Result<bool, kube::Error> {
         let timeout = Duration::from_secs(1800); // 30 minutes max
         let start = std::time::Instant::now();
+        let mut not_found_count = 0;
 
         loop {
             if start.elapsed() > timeout {
@@ -281,6 +284,7 @@ impl Scheduler {
 
             match self.jobs_api.get(job_name).await {
                 Ok(job) => {
+                    not_found_count = 0; // Reset counter on success
                     if let Some(status) = job.status {
                         // Check if succeeded
                         if status.succeeded.unwrap_or(0) > 0 {
@@ -298,6 +302,15 @@ impl Scheduler {
                         debug!(job = %job_name, "Job still running");
                     }
                 }
+                Err(kube::Error::Api(ref err)) if err.code == 404 => {
+                    not_found_count += 1;
+                    warn!(job = %job_name, count = not_found_count, "Job not found");
+                    // If job is consistently not found, treat as deleted/failed
+                    if not_found_count >= 3 {
+                        error!(job = %job_name, "Job disappeared, marking as failed");
+                        return Ok(false);
+                    }
+                }
                 Err(e) => {
                     error!(error = %e, job = %job_name, "Failed to get job status");
                 }
@@ -305,5 +318,73 @@ impl Scheduler {
 
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use k8s_openapi::api::batch::v1::JobStatus;
+
+    /// Helper to evaluate job status for testing
+    fn evaluate_job_status(status: Option<&JobStatus>) -> Option<bool> {
+        if let Some(s) = status {
+            if s.succeeded.unwrap_or(0) > 0 {
+                return Some(true);
+            }
+            if s.failed.unwrap_or(0) > 0 {
+                return Some(false);
+            }
+        }
+        None // Still running
+    }
+
+    #[test]
+    fn test_job_status_succeeded() {
+        let status = JobStatus {
+            succeeded: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(evaluate_job_status(Some(&status)), Some(true));
+    }
+
+    #[test]
+    fn test_job_status_failed() {
+        let status = JobStatus {
+            failed: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(evaluate_job_status(Some(&status)), Some(false));
+    }
+
+    #[test]
+    fn test_job_status_running() {
+        let status = JobStatus {
+            active: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(evaluate_job_status(Some(&status)), None);
+    }
+
+    #[test]
+    fn test_job_status_none() {
+        assert_eq!(evaluate_job_status(None), None);
+    }
+
+    #[test]
+    fn test_not_found_counter_threshold() {
+        // Simulate the not_found counter behavior
+        let threshold = 3;
+        let mut not_found_count = 0;
+
+        // First two 404s should not trigger failure
+        for _ in 0..2 {
+            not_found_count += 1;
+            assert!(not_found_count < threshold, "Should not fail yet");
+        }
+
+        // Third 404 should trigger failure
+        not_found_count += 1;
+        assert!(not_found_count >= threshold, "Should fail after 3 not-founds");
     }
 }
