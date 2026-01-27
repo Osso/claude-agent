@@ -77,9 +77,19 @@ async fn gitlab_webhook_handler(
         return Err(AppError::Unauthorized);
     }
 
+    // Log raw body for debugging
+    if let Ok(body_str) = std::str::from_utf8(&body) {
+        debug!(body = %body_str, "Raw webhook body");
+    }
+
     // Parse event
     let event: MergeRequestEvent = serde_json::from_slice(&body).map_err(|e| {
-        error!(error = %e, "Failed to parse webhook body");
+        // Log raw body on parse error for debugging
+        if let Ok(body_str) = std::str::from_utf8(&body) {
+            error!(error = %e, body = %body_str, "Failed to parse webhook body");
+        } else {
+            error!(error = %e, "Failed to parse webhook body (non-UTF8)");
+        }
         AppError::BadRequest(format!("Invalid JSON: {e}"))
     })?;
 

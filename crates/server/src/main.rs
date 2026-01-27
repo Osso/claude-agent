@@ -8,8 +8,8 @@ use std::net::SocketAddr;
 use anyhow::{Context, Result};
 use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
-use tracing::{info, Level};
-use tracing_subscriber::FmtSubscriber;
+use tracing::info;
+use tracing_subscriber::EnvFilter;
 
 mod gitlab;
 mod queue;
@@ -22,14 +22,18 @@ use webhook::{router, AppState};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
-        .with_target(false)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber)?;
+    // Initialize logging (configurable via RUST_LOG or LOG_LEVEL env var)
+    let filter = EnvFilter::try_from_env("LOG_LEVEL")
+        .or_else(|_| EnvFilter::try_from_default_env())
+        .unwrap_or_else(|_| EnvFilter::new("info"));
 
-    info!("Claude Agent Server starting");
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .init();
+
+    const VERSION: &str = "2026.01.27.2";
+    info!(version = VERSION, "Claude Agent Server starting");
 
     // Get configuration from environment
     let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
