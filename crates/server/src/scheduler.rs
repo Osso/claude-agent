@@ -323,7 +323,6 @@ impl Scheduler {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use k8s_openapi::api::batch::v1::JobStatus;
 
     /// Helper to evaluate job status for testing
