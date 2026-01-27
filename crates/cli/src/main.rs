@@ -2,6 +2,8 @@
 //!
 //! CLI for managing the review queue and testing.
 
+use std::path::PathBuf;
+
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use futures_util::io::AsyncBufReadExt;
@@ -11,21 +13,57 @@ use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, ListParams, LogParams};
 use kube::Client;
 use reqwest::header::{HeaderMap, HeaderValue};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
-use claude_agent_server::{FailedItem, Queue, ReviewPayload};
+use claude_agent_server::{FailedItem, ReviewPayload};
 
 const NAMESPACE: &str = "claude-agent";
+
+/// Config file structure (~/.config/claude-agent/config.toml)
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct Config {
+    /// Server URL for HTTP API access
+    server_url: Option<String>,
+    /// API key for authentication
+    api_key: Option<String>,
+}
+
+impl Config {
+    /// Load config from ~/.config/claude-agent/config.toml
+    fn load() -> Self {
+        let path = Self::config_path();
+        if path.exists() {
+            std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|s| toml::from_str(&s).ok())
+                .unwrap_or_default()
+        } else {
+            Self::default()
+        }
+    }
+
+    /// Get config file path
+    fn config_path() -> PathBuf {
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("claude-agent")
+            .join("config.toml")
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "claude-agent")]
 #[command(about = "Claude Agent CLI for MR review management")]
 struct Cli {
-    /// Redis URL
-    #[arg(long, env = "REDIS_URL", default_value = "redis://127.0.0.1:6379")]
-    redis_url: String,
+    /// Server URL for HTTP API
+    #[arg(long, env = "CLAUDE_AGENT_URL")]
+    server_url: Option<String>,
+
+    /// API key for server authentication
+    #[arg(long, env = "CLAUDE_AGENT_API_KEY")]
+    api_key: Option<String>,
 
     #[command(subcommand)]
     command: Commands,
@@ -33,7 +71,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Fetch and display MR info (no Redis required)
+    /// Fetch and display MR info
     Info {
         /// Project path (e.g., Globalcomix/gc)
         #[arg(long, short)]
@@ -74,12 +112,8 @@ enum Commands {
     /// Show queue statistics
     Stats,
 
-    /// List items in the queue
-    List {
-        /// Show failed items instead of pending
-        #[arg(long)]
-        failed: bool,
-
+    /// List failed items in the queue
+    ListFailed {
         /// Maximum number of items to show
         #[arg(long, default_value = "10")]
         limit: usize,
@@ -126,9 +160,6 @@ enum Commands {
         id: String,
     },
 
-    /// Clear failed items
-    ClearFailed,
-
     /// Show logs from a running or completed review job
     Logs {
         /// Job ID (first 8 chars of queue ID) or full job name
@@ -162,7 +193,12 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Handle commands that don't need Redis first
+    // Load config file and merge with CLI args (CLI args take precedence)
+    let config = Config::load();
+    let server_url = cli.server_url.or(config.server_url);
+    let api_key = cli.api_key.or(config.api_key);
+
+    // Handle commands that don't need the server
     match &cli.command {
         Commands::Info {
             project,
@@ -193,9 +229,13 @@ async fn main() -> Result<()> {
         _ => {}
     }
 
-    let queue = Queue::new(&cli.redis_url)
-        .await
-        .context("Failed to connect to Redis")?;
+    // All other commands require server URL and API key
+    let server_url = server_url.context(
+        "Server URL required. Set in ~/.config/claude-agent/config.toml or CLAUDE_AGENT_URL",
+    )?;
+    let api_key = api_key.context(
+        "API key required. Set in ~/.config/claude-agent/config.toml or CLAUDE_AGENT_API_KEY",
+    )?;
 
     match cli.command {
         Commands::Info { .. } | Commands::Logs { .. } | Commands::Jobs { .. } => {
@@ -208,7 +248,6 @@ async fn main() -> Result<()> {
             gitlab_url,
             token,
         } => {
-            // Fetch MR details from GitLab
             let mr_info = fetch_mr_info(&gitlab_url, &project, mr, &token).await?;
 
             let payload = ReviewPayload {
@@ -223,41 +262,17 @@ async fn main() -> Result<()> {
                 author: mr_info.author,
             };
 
-            let id = queue.push(payload).await?;
+            let id = api_queue_review(&server_url, &api_key, &payload).await?;
             println!("Queued review for !{} in {}", mr, project);
             println!("Job ID: {id}");
         }
 
         Commands::Stats => {
-            let pending = queue.len().await?;
-            let processing = queue.processing_count().await?;
-            let failed = queue.failed_count().await?;
-
-            println!("Queue Statistics:");
-            println!("  Pending:    {pending}");
-            println!("  Processing: {processing}");
-            println!("  Failed:     {failed}");
+            api_stats(&server_url, &api_key).await?;
         }
 
-        Commands::List { failed, limit } => {
-            if failed {
-                let items = queue.list_failed(limit).await?;
-
-                if items.is_empty() {
-                    println!("No failed items");
-                } else {
-                    println!("Failed Items:");
-                    for item in items {
-                        println!();
-                        print_failed_item(&item);
-                    }
-                }
-            } else {
-                // Note: We can't easily list pending items without modifying the queue
-                // This would require LRANGE which doesn't remove items
-                println!("Pending: {} items in queue", queue.len().await?);
-                println!("(Use --failed to list failed items with details)");
-            }
+        Commands::ListFailed { limit } => {
+            api_list_failed(&server_url, &api_key, limit).await?;
         }
 
         Commands::Queue {
@@ -282,21 +297,12 @@ async fn main() -> Result<()> {
                 author,
             };
 
-            let id = queue.push(payload).await?;
+            let id = api_queue_review(&server_url, &api_key, &payload).await?;
             println!("Queued review job: {id}");
         }
 
         Commands::Retry { id } => {
-            if queue.retry_failed(&id).await? {
-                println!("Retried job: {id}");
-            } else {
-                println!("Job not found in failed list: {id}");
-            }
-        }
-
-        Commands::ClearFailed => {
-            let count = queue.clear_failed().await?;
-            println!("Cleared {count} failed items");
+            api_retry(&server_url, &api_key, &id).await?;
         }
     }
 
@@ -350,11 +356,13 @@ async fn fetch_mr_info(
 ) -> Result<MrInfo> {
     let mut headers = HeaderMap::new();
     // Support both PAT (PRIVATE-TOKEN) and OAuth (Bearer) tokens
-    // PATs are typically shorter and start with "glpat-"
     if token.starts_with("glpat-") || token.len() < 50 {
         headers.insert("PRIVATE-TOKEN", HeaderValue::from_str(token)?);
     } else {
-        headers.insert("Authorization", HeaderValue::from_str(&format!("Bearer {token}"))?);
+        headers.insert(
+            "Authorization",
+            HeaderValue::from_str(&format!("Bearer {token}"))?,
+        );
     }
 
     let client = reqwest::Client::builder()
@@ -556,4 +564,139 @@ async fn show_logs(job_filter: Option<&str>, follow: bool, tail: i64) -> Result<
     }
 
     Ok(())
+}
+
+// HTTP API client for server communication
+
+/// Stats response from the server API.
+#[derive(Deserialize)]
+struct ApiStats {
+    pending: u64,
+    processing: u64,
+    failed: u64,
+}
+
+/// Create an HTTP client with API key authentication.
+fn create_api_client(api_key: &str) -> Result<reqwest::Client> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "Authorization",
+        HeaderValue::from_str(&format!("Bearer {api_key}"))?,
+    );
+    Ok(reqwest::Client::builder()
+        .default_headers(headers)
+        .build()?)
+}
+
+/// Fetch queue stats via HTTP API.
+async fn api_stats(server_url: &str, api_key: &str) -> Result<()> {
+    let client = create_api_client(api_key)?;
+    let url = format!("{}/api/stats", server_url.trim_end_matches('/'));
+
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .context("Failed to fetch stats")?;
+
+    if !resp.status().is_success() {
+        bail!("API error: {} - {}", resp.status(), resp.text().await?);
+    }
+
+    let stats: ApiStats = resp.json().await.context("Failed to parse stats response")?;
+
+    println!("Queue Statistics:");
+    println!("  Pending:    {}", stats.pending);
+    println!("  Processing: {}", stats.processing);
+    println!("  Failed:     {}", stats.failed);
+
+    Ok(())
+}
+
+/// Fetch failed items via HTTP API.
+async fn api_list_failed(server_url: &str, api_key: &str, limit: usize) -> Result<()> {
+    let client = create_api_client(api_key)?;
+    let url = format!("{}/api/failed", server_url.trim_end_matches('/'));
+
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .context("Failed to fetch failed items")?;
+
+    if !resp.status().is_success() {
+        bail!("API error: {} - {}", resp.status(), resp.text().await?);
+    }
+
+    let items: Vec<FailedItem> = resp
+        .json()
+        .await
+        .context("Failed to parse failed items response")?;
+
+    if items.is_empty() {
+        println!("No failed items");
+    } else {
+        println!("Failed Items:");
+        for item in items.into_iter().take(limit) {
+            println!();
+            print_failed_item(&item);
+        }
+    }
+
+    Ok(())
+}
+
+/// Retry a failed item via HTTP API.
+async fn api_retry(server_url: &str, api_key: &str, id: &str) -> Result<()> {
+    let client = create_api_client(api_key)?;
+    let url = format!("{}/api/retry/{}", server_url.trim_end_matches('/'), id);
+
+    let resp = client
+        .post(&url)
+        .send()
+        .await
+        .context("Failed to retry item")?;
+
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        println!("Job not found in failed list: {id}");
+    } else if !resp.status().is_success() {
+        bail!("API error: {} - {}", resp.status(), resp.text().await?);
+    } else {
+        println!("Retried job: {id}");
+    }
+
+    Ok(())
+}
+
+/// Queue a review via HTTP API.
+async fn api_queue_review(
+    server_url: &str,
+    api_key: &str,
+    payload: &ReviewPayload,
+) -> Result<String> {
+    let client = create_api_client(api_key)?;
+    let url = format!("{}/api/review", server_url.trim_end_matches('/'));
+
+    let resp = client
+        .post(&url)
+        .json(payload)
+        .send()
+        .await
+        .context("Failed to queue review")?;
+
+    if !resp.status().is_success() {
+        bail!("API error: {} - {}", resp.status(), resp.text().await?);
+    }
+
+    #[derive(Deserialize)]
+    struct QueueResponse {
+        job_id: String,
+    }
+
+    let result: QueueResponse = resp
+        .json()
+        .await
+        .context("Failed to parse queue response")?;
+
+    Ok(result.job_id)
 }

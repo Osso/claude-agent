@@ -22,6 +22,8 @@ urlencoding = { workspace = true }
 kube = { workspace = true }
 k8s-openapi = { workspace = true }
 futures-util = "0.3"
+toml = "0.8"
+dirs = "6"
 
 claude-agent-core = { workspace = true }
 claude-agent-server = { workspace = true }
