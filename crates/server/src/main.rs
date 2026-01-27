@@ -38,6 +38,7 @@ async fn main() -> Result<()> {
     // Get configuration from environment
     let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
     let webhook_secret = env::var("WEBHOOK_SECRET").context("WEBHOOK_SECRET not set")?;
+    let api_key = env::var("API_KEY").ok(); // Optional, defaults to webhook_secret
     let listen_addr = env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8443".into());
 
     // Initialize queue
@@ -51,6 +52,7 @@ async fn main() -> Result<()> {
     let state = AppState {
         queue: queue.clone(),
         webhook_secret,
+        api_key,
     };
 
     // Build router
