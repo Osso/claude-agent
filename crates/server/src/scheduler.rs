@@ -52,19 +52,16 @@ impl Scheduler {
         *self.running.lock().await = true;
 
         while *self.running.lock().await {
+            // Wait for any running job to finish before popping
+            if self.has_running_job().await {
+                debug!("Job already running, waiting");
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                continue;
+            }
+
             // Try to get next item from queue (blocks for 30s if empty)
             match self.queue.pop(30).await {
                 Ok(Some(item)) => {
-                    // Only check for running job when we have work to do
-                    if self.has_running_job().await {
-                        debug!("Job already running, re-queueing item");
-                        // Put item back and wait
-                        if let Err(e) = self.queue.push(item.payload).await {
-                            error!(error = %e, "Failed to re-queue item");
-                        }
-                        tokio::time::sleep(Duration::from_secs(10)).await;
-                        continue;
-                    }
                     info!(id = %item.id, "Processing queue item");
 
                     // Mark as processing
