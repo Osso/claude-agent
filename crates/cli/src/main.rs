@@ -141,6 +141,29 @@ enum Commands {
         #[arg(long, short)]
         all: bool,
     },
+
+    /// Show comments/notes on an MR
+    Notes {
+        /// Project path (e.g., Globalcomix/gc)
+        #[arg(long, short)]
+        project: String,
+
+        /// Merge request IID
+        #[arg(long, short)]
+        mr: u64,
+
+        /// GitLab URL (defaults to gitlab.com)
+        #[arg(long, default_value = "https://gitlab.com")]
+        gitlab_url: String,
+
+        /// GitLab token (defaults to GITLAB_TOKEN env var)
+        #[arg(long, env = "GITLAB_TOKEN")]
+        token: String,
+
+        /// Number of notes to show
+        #[arg(long, short = 'n', default_value = "5")]
+        limit: usize,
+    },
 }
 
 #[tokio::main]
@@ -187,6 +210,16 @@ async fn main() -> Result<()> {
             list_jobs(*all).await?;
             return Ok(());
         }
+        Commands::Notes {
+            project,
+            mr,
+            gitlab_url,
+            token,
+            limit,
+        } => {
+            show_notes(gitlab_url, project, *mr, token, *limit).await?;
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -199,7 +232,7 @@ async fn main() -> Result<()> {
     )?;
 
     match cli.command {
-        Commands::Info { .. } | Commands::Logs { .. } | Commands::Jobs { .. } => {
+        Commands::Info { .. } | Commands::Logs { .. } | Commands::Jobs { .. } | Commands::Notes { .. } => {
             unreachable!() // Handled above
         }
 
@@ -334,6 +367,68 @@ async fn fetch_mr_info(
         author: mr.author.username,
         clone_url: project_info.http_url_to_repo,
     })
+}
+
+async fn show_notes(
+    gitlab_url: &str,
+    project: &str,
+    mr_iid: u64,
+    token: &str,
+    limit: usize,
+) -> Result<()> {
+    let headers = claude_agent_server::gitlab_auth_headers(token)?;
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()?;
+
+    let encoded_project = urlencoding::encode(project);
+    let base_url = gitlab_url.trim_end_matches('/');
+
+    let url = format!(
+        "{}/api/v4/projects/{}/merge_requests/{}/notes?sort=desc&per_page={}",
+        base_url, encoded_project, mr_iid, limit
+    );
+
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .context("Failed to fetch notes")?;
+
+    if !resp.status().is_success() {
+        bail!(
+            "GitLab API error: {} - {}",
+            resp.status(),
+            resp.text().await?
+        );
+    }
+
+    let notes: Vec<GitLabNote> = resp.json().await.context("Failed to parse notes")?;
+
+    if notes.is_empty() {
+        println!("No comments on !{}", mr_iid);
+        return Ok(());
+    }
+
+    for note in &notes {
+        if note.system {
+            continue;
+        }
+        println!("--- #{} by @{} ({})", note.id, note.author.username, note.created_at);
+        println!("{}", note.body);
+        println!();
+    }
+
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct GitLabNote {
+    id: u64,
+    body: String,
+    author: GitLabUser,
+    created_at: String,
+    system: bool,
 }
 
 async fn list_jobs(show_all: bool) -> Result<()> {
