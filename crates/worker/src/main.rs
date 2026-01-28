@@ -54,6 +54,8 @@ fn default_platform() -> String {
     "gitlab".into()
 }
 
+const VERSION: &str = "2026.01.28.4";
+
 fn main() -> Result<()> {
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
@@ -62,7 +64,7 @@ fn main() -> Result<()> {
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
-    info!("Claude Agent Worker starting");
+    info!(version = VERSION, "Claude Agent Worker starting");
 
     let payload = decode_payload()?;
     let is_github = payload.platform == "github";

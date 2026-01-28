@@ -21,7 +21,11 @@ use tracing::{debug, error, info, warn};
 use crate::queue::{Queue, QueueItem};
 
 const NAMESPACE: &str = "claude-agent";
-const WORKER_IMAGE: &str = "registry.digitalocean.com/globalcomix/claude-agent-worker:latest";
+/// Worker image, configurable via WORKER_IMAGE env var (defaults to :latest)
+fn worker_image() -> String {
+    std::env::var("WORKER_IMAGE")
+        .unwrap_or_else(|_| "registry.digitalocean.com/globalcomix/claude-agent-worker:latest".into())
+}
 const JOB_TTL_SECONDS: i32 = 900; // 15 minutes after completion
 
 /// Job scheduler that processes the queue sequentially.
@@ -193,7 +197,7 @@ impl Scheduler {
                         ),
                         containers: vec![Container {
                             name: "worker".into(),
-                            image: Some(WORKER_IMAGE.into()),
+                            image: Some(worker_image()),
                             env: Some(vec![
                                 EnvVar {
                                     name: "REVIEW_PAYLOAD".into(),

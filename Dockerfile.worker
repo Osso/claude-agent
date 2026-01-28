@@ -114,7 +114,7 @@ COPY --from=mago-builder /build/bin/mago /usr/local/bin/mago
 COPY --from=jira-builder /jira-bin /usr/local/bin/jira
 
 # Claude Code configuration
-COPY worker-home/.claude /home/app/.claude
+COPY --chown=app:app worker-home/.claude /home/app/.claude
 
 # Create work directory
 RUN mkdir -p /work && chown app:app /work

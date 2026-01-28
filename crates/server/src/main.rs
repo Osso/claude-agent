@@ -4,9 +4,11 @@
 
 use std::env;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use tokio::net::TcpListener;
+use tokio::signal;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -33,7 +35,7 @@ async fn main() -> Result<()> {
         .with_target(false)
         .init();
 
-    const VERSION: &str = "2026.01.28.1";
+    const VERSION: &str = "2026.01.28.4";
     info!(version = VERSION, "Claude Agent Server starting");
 
     // Get configuration from environment
@@ -64,12 +66,15 @@ async fn main() -> Result<()> {
     let app = router(state).layer(TraceLayer::new_for_http());
 
     // Start scheduler in background
-    let scheduler = Scheduler::new(queue)
-        .await
-        .context("Failed to create scheduler")?;
+    let scheduler = Arc::new(
+        Scheduler::new(queue)
+            .await
+            .context("Failed to create scheduler")?,
+    );
 
+    let scheduler_clone = scheduler.clone();
     let scheduler_handle = tokio::spawn(async move {
-        scheduler.run().await;
+        scheduler_clone.run().await;
     });
 
     // Start HTTP server
@@ -77,12 +82,42 @@ async fn main() -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     info!(addr = %addr, "Listening for webhooks");
 
+    // Run server with graceful shutdown
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(scheduler.clone()))
         .await
         .context("Server error")?;
 
-    // Wait for scheduler (shouldn't happen unless shutdown)
+    // Wait for scheduler to stop
     scheduler_handle.await?;
 
+    info!("Server shutdown complete");
     Ok(())
+}
+
+async fn shutdown_signal(scheduler: Arc<Scheduler>) {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    info!("Shutdown signal received, stopping...");
+    scheduler.stop().await;
 }

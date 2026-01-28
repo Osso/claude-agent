@@ -54,13 +54,14 @@ impl ClaudeProcess {
 
     /// Send a user message and collect all responses until result.
     pub fn send(&mut self, content: &str) -> Result<Vec<ClaudeOutput>, Error> {
-        debug!(content_len = content.len(), "Sending message to Claude");
+        info!(content_len = content.len(), "Sending message to Claude");
 
         // Send input
         let input = ClaudeInput::user(content.into());
         let json = serde_json::to_string(&input)?;
         writeln!(self.stdin, "{json}")?;
         self.stdin.flush()?;
+        info!("Message sent, waiting for Claude response");
 
         // Collect output until result
         let mut outputs = Vec::new();
@@ -80,7 +81,7 @@ impl ClaudeProcess {
                 continue;
             }
 
-            trace!(line = trimmed, "Received line from Claude");
+            info!(line_len = trimmed.len(), "Received line from Claude");
 
             match serde_json::from_str::<ClaudeOutput>(trimmed) {
                 Ok(output) => {
