@@ -136,11 +136,8 @@ kubectl rollout status deployment/claude-agent-server -n claude-agent
 ## Testing Webhooks Locally
 
 ```bash
-# Start Redis
-docker run -p 6379:6379 redis:7
-
-# Run server
-WEBHOOK_SECRET=test REDIS_URL=redis://localhost:6379 cargo run -p claude-agent-server
+# Start server + valkey
+docker compose up -d
 
 # Send test webhook
 curl -X POST http://localhost:8443/webhook/gitlab \
