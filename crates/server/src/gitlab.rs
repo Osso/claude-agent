@@ -2,6 +2,7 @@
 
 #![allow(dead_code)] // Deserialization structs have unused fields
 
+use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 
 /// GitLab Merge Request webhook event.
@@ -82,6 +83,87 @@ pub struct Repository {
     pub name: String,
     pub url: String,
     pub homepage: Option<String>,
+}
+
+/// Build auth headers for GitLab API requests.
+/// Supports both PAT (PRIVATE-TOKEN) and OAuth (Bearer) tokens.
+pub fn gitlab_auth_headers(token: &str) -> Result<HeaderMap, anyhow::Error> {
+    let mut headers = HeaderMap::new();
+    if token.starts_with("glpat-") || token.len() < 50 {
+        headers.insert("PRIVATE-TOKEN", HeaderValue::from_str(token)?);
+    } else {
+        headers.insert(
+            "Authorization",
+            HeaderValue::from_str(&format!("Bearer {token}"))?,
+        );
+    }
+    Ok(headers)
+}
+
+/// Fetch MR details from GitLab API and build a ReviewPayload.
+pub async fn fetch_review_payload(
+    gitlab_url: &str,
+    project: &str,
+    mr_iid: u64,
+    token: &str,
+) -> Result<ReviewPayload, anyhow::Error> {
+    use anyhow::{bail, Context};
+
+    let headers = gitlab_auth_headers(token)?;
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()?;
+
+    let encoded_project = urlencoding::encode(project);
+    let base_url = gitlab_url.trim_end_matches('/');
+
+    // Fetch MR details
+    let mr_url = format!("{base_url}/api/v4/projects/{encoded_project}/merge_requests/{mr_iid}");
+    let mr_resp = client.get(&mr_url).send().await.context("GitLab MR request failed")?;
+    if !mr_resp.status().is_success() {
+        bail!("GitLab API {} - {}", mr_resp.status(), mr_resp.text().await?);
+    }
+
+    #[derive(Deserialize)]
+    struct GitLabMr {
+        title: String,
+        description: Option<String>,
+        source_branch: String,
+        target_branch: String,
+        author: GitLabUser,
+    }
+    #[derive(Deserialize)]
+    struct GitLabUser {
+        username: String,
+    }
+
+    let mr: GitLabMr = mr_resp.json().await.context("Failed to parse MR")?;
+
+    // Fetch project for clone URL
+    let project_url = format!("{base_url}/api/v4/projects/{encoded_project}");
+    let proj_resp = client.get(&project_url).send().await.context("GitLab project request failed")?;
+    if !proj_resp.status().is_success() {
+        bail!("GitLab API {} - {}", proj_resp.status(), proj_resp.text().await?);
+    }
+
+    #[derive(Deserialize)]
+    struct GitLabProject {
+        http_url_to_repo: String,
+    }
+
+    let proj: GitLabProject = proj_resp.json().await.context("Failed to parse project")?;
+
+    Ok(ReviewPayload {
+        gitlab_url: gitlab_url.to_string(),
+        project: project.to_string(),
+        mr_iid: mr_iid.to_string(),
+        clone_url: proj.http_url_to_repo,
+        source_branch: mr.source_branch,
+        target_branch: mr.target_branch,
+        title: mr.title,
+        description: mr.description,
+        author: mr.author.username,
+    })
 }
 
 impl MergeRequestEvent {

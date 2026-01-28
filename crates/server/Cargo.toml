@@ -29,4 +29,6 @@ redis = { workspace = true }
 kube = { workspace = true }
 k8s-openapi = { workspace = true }
 
+urlencoding = { workspace = true }
+
 claude-agent-core = { workspace = true }

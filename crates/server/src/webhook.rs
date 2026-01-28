@@ -13,7 +13,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 
-use crate::gitlab::{MergeRequestEvent, ReviewPayload};
+use crate::gitlab::{fetch_review_payload, MergeRequestEvent, ReviewPayload};
 use crate::queue::Queue;
 
 /// Application state shared across handlers.
@@ -23,6 +23,8 @@ pub struct AppState {
     pub webhook_secret: String,
     /// API key for CLI access (defaults to webhook_secret if not set)
     pub api_key: Option<String>,
+    /// GitLab API token for fetching MR details
+    pub gitlab_token: String,
 }
 
 impl AppState {
@@ -236,18 +238,20 @@ async fn retry_handler(
     }
 }
 
-/// Queue a review directly via API.
+/// Queue a review via API — server fetches MR details from GitLab.
 #[derive(Deserialize)]
 struct QueueReviewRequest {
-    gitlab_url: String,
+    /// Project path (e.g., "Globalcomix/gc")
     project: String,
-    mr_iid: String,
-    clone_url: String,
-    source_branch: String,
-    target_branch: String,
-    title: String,
-    description: Option<String>,
-    author: String,
+    /// Merge request IID
+    mr_iid: u64,
+    /// GitLab base URL (defaults to https://gitlab.com)
+    #[serde(default = "default_gitlab_url")]
+    gitlab_url: String,
+}
+
+fn default_gitlab_url() -> String {
+    "https://gitlab.com".into()
 }
 
 async fn queue_review_handler(
@@ -260,17 +264,10 @@ async fn queue_review_handler(
         return Err(AppError::Unauthorized);
     }
 
-    let payload = ReviewPayload {
-        gitlab_url: req.gitlab_url,
-        project: req.project.clone(),
-        mr_iid: req.mr_iid.clone(),
-        clone_url: req.clone_url,
-        source_branch: req.source_branch,
-        target_branch: req.target_branch,
-        title: req.title,
-        description: req.description,
-        author: req.author,
-    };
+    // Fetch MR details from GitLab
+    let payload = fetch_review_payload(&req.gitlab_url, &req.project, req.mr_iid, &state.gitlab_token)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to fetch MR from GitLab: {e}")))?;
 
     let job_id = state.queue.push(payload).await.map_err(AppError::Redis)?;
 

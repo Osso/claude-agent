@@ -13,16 +13,16 @@ use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, ListParams, LogParams};
 use kube::Client;
 use reqwest::header::{HeaderMap, HeaderValue};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
-use claude_agent_server::{FailedItem, ReviewPayload};
+use claude_agent_server::FailedItem;
 
 const NAMESPACE: &str = "claude-agent";
 
 /// Config file structure (~/.config/claude-agent/config.toml)
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize)]
 struct Config {
     /// Server URL for HTTP API access
     server_url: Option<String>,
@@ -90,7 +90,7 @@ enum Commands {
         token: String,
     },
 
-    /// Trigger a review for an MR (fetches details from GitLab)
+    /// Trigger a review for an MR
     Review {
         /// Project path (e.g., Globalcomix/gc)
         #[arg(long, short)]
@@ -103,10 +103,6 @@ enum Commands {
         /// GitLab URL (defaults to gitlab.com)
         #[arg(long, default_value = "https://gitlab.com")]
         gitlab_url: String,
-
-        /// GitLab token (defaults to GITLAB_TOKEN env var)
-        #[arg(long, env = "GITLAB_TOKEN")]
-        token: String,
     },
 
     /// Show queue statistics
@@ -117,41 +113,6 @@ enum Commands {
         /// Maximum number of items to show
         #[arg(long, default_value = "10")]
         limit: usize,
-    },
-
-    /// Queue a review manually
-    Queue {
-        /// GitLab URL (e.g., https://gitlab.com)
-        #[arg(long)]
-        gitlab_url: String,
-
-        /// Project path (e.g., group/project)
-        #[arg(long)]
-        project: String,
-
-        /// Merge request IID
-        #[arg(long)]
-        mr_iid: String,
-
-        /// Clone URL
-        #[arg(long)]
-        clone_url: String,
-
-        /// Source branch
-        #[arg(long)]
-        source_branch: String,
-
-        /// Target branch
-        #[arg(long, default_value = "main")]
-        target_branch: String,
-
-        /// MR title
-        #[arg(long)]
-        title: String,
-
-        /// Author username
-        #[arg(long)]
-        author: String,
     },
 
     /// Retry a failed item
@@ -246,23 +207,8 @@ async fn main() -> Result<()> {
             project,
             mr,
             gitlab_url,
-            token,
         } => {
-            let mr_info = fetch_mr_info(&gitlab_url, &project, mr, &token).await?;
-
-            let payload = ReviewPayload {
-                gitlab_url: gitlab_url.clone(),
-                project: project.clone(),
-                mr_iid: mr.to_string(),
-                clone_url: mr_info.clone_url,
-                source_branch: mr_info.source_branch,
-                target_branch: mr_info.target_branch,
-                title: mr_info.title,
-                description: mr_info.description,
-                author: mr_info.author,
-            };
-
-            let id = api_queue_review(&server_url, &api_key, &payload).await?;
+            let id = api_queue_review(&server_url, &api_key, &project, mr, &gitlab_url).await?;
             println!("Queued review for !{} in {}", mr, project);
             println!("Job ID: {id}");
         }
@@ -273,32 +219,6 @@ async fn main() -> Result<()> {
 
         Commands::ListFailed { limit } => {
             api_list_failed(&server_url, &api_key, limit).await?;
-        }
-
-        Commands::Queue {
-            gitlab_url,
-            project,
-            mr_iid,
-            clone_url,
-            source_branch,
-            target_branch,
-            title,
-            author,
-        } => {
-            let payload = ReviewPayload {
-                gitlab_url,
-                project,
-                mr_iid,
-                clone_url,
-                source_branch,
-                target_branch,
-                title,
-                description: None,
-                author,
-            };
-
-            let id = api_queue_review(&server_url, &api_key, &payload).await?;
-            println!("Queued review job: {id}");
         }
 
         Commands::Retry { id } => {
@@ -354,17 +274,7 @@ async fn fetch_mr_info(
     mr_iid: u64,
     token: &str,
 ) -> Result<MrInfo> {
-    let mut headers = HeaderMap::new();
-    // Support both PAT (PRIVATE-TOKEN) and OAuth (Bearer) tokens
-    if token.starts_with("glpat-") || token.len() < 50 {
-        headers.insert("PRIVATE-TOKEN", HeaderValue::from_str(token)?);
-    } else {
-        headers.insert(
-            "Authorization",
-            HeaderValue::from_str(&format!("Bearer {token}"))?,
-        );
-    }
-
+    let headers = claude_agent_server::gitlab_auth_headers(token)?;
     let client = reqwest::Client::builder()
         .default_headers(headers)
         .build()?;
@@ -672,14 +582,20 @@ async fn api_retry(server_url: &str, api_key: &str, id: &str) -> Result<()> {
 async fn api_queue_review(
     server_url: &str,
     api_key: &str,
-    payload: &ReviewPayload,
+    project: &str,
+    mr_iid: u64,
+    gitlab_url: &str,
 ) -> Result<String> {
     let client = create_api_client(api_key)?;
     let url = format!("{}/api/review", server_url.trim_end_matches('/'));
 
     let resp = client
         .post(&url)
-        .json(payload)
+        .json(&serde_json::json!({
+            "project": project,
+            "mr_iid": mr_iid,
+            "gitlab_url": gitlab_url,
+        }))
         .send()
         .await
         .context("Failed to queue review")?;

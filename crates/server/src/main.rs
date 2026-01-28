@@ -39,6 +39,7 @@ async fn main() -> Result<()> {
     let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
     let webhook_secret = env::var("WEBHOOK_SECRET").context("WEBHOOK_SECRET not set")?;
     let api_key = env::var("API_KEY").ok(); // Optional, defaults to webhook_secret
+    let gitlab_token = env::var("GITLAB_TOKEN").context("GITLAB_TOKEN not set")?;
     let listen_addr = env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8443".into());
 
     // Initialize queue
@@ -53,6 +54,7 @@ async fn main() -> Result<()> {
         queue: queue.clone(),
         webhook_secret,
         api_key,
+        gitlab_token,
     };
 
     // Build router
