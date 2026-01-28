@@ -14,8 +14,7 @@ use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use claude_agent_agents::{GitLabClient, MrReviewAgent};
-use claude_agent_claude::ClaudeProcess;
-use claude_agent_core::{AgentController, ReviewContext, State};
+use claude_agent_core::ReviewContext;
 
 /// Payload received from the scheduler.
 #[derive(Debug, serde::Deserialize)]
@@ -97,37 +96,53 @@ async fn main() -> Result<()> {
     // Create GitLab client
     let gitlab_client = GitLabClient::new(&payload.gitlab_url, &payload.project, &gitlab_token);
 
-    // Create agent
-    let agent = MrReviewAgent::new(context.clone(), &work_dir).with_gitlab(gitlab_client);
-    let initial_prompt = agent.build_prompt();
+    // Build review prompt
+    let agent = MrReviewAgent::new(context, &work_dir);
+    let prompt = agent.build_prompt();
 
-    // Spawn Claude process
-    let claude = ClaudeProcess::spawn(&work_dir)?;
+    // Run Claude in single-prompt mode
+    info!("Running Claude review");
+    let output = run_claude(&work_dir, &prompt)?;
 
-    // Create controller
-    let state = State::with_context(context);
-    let mut controller = AgentController::new(claude, agent, "").with_state(state);
+    if output.trim().is_empty() {
+        bail!("Claude returned empty output");
+    }
 
-    // Run the review
-    match controller.run(&initial_prompt).await {
-        Ok(result) => {
-            info!(
-                decision = ?result.decision,
-                issues = result.issues.len(),
-                "Review completed"
-            );
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&result).unwrap_or_default()
-            );
+    info!(output_len = output.len(), "Claude review completed");
+
+    // Post review as MR comment
+    match gitlab_client
+        .post_mr_note(&payload.mr_iid, &output)
+        .await
+    {
+        Ok(note_id) => {
+            info!(note_id = %note_id, "Posted review comment");
         }
         Err(e) => {
-            error!(error = %e, "Review failed");
-            bail!("Review failed: {e}");
+            error!(error = %e, "Failed to post review comment");
+            bail!("Failed to post review comment: {e}");
         }
     }
 
     Ok(())
+}
+
+/// Run Claude Code in single-prompt mode and return its text output.
+fn run_claude(work_dir: &PathBuf, prompt: &str) -> Result<String> {
+    let output = Command::new("claude")
+        .arg("--print")
+        .arg("--dangerously-skip-permissions")
+        .arg(prompt)
+        .current_dir(work_dir)
+        .output()
+        .context("Failed to run claude")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("Claude exited with status {}: {}", output.status, stderr);
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Inject OAuth2 credentials into a git HTTPS URL.
