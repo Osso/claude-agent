@@ -228,13 +228,27 @@ fn decode_payload() -> Result<JobPayload> {
 
 /// Run Claude Code with tools enabled. Claude will post the review itself.
 fn run_claude(work_dir: &PathBuf, prompt: &str) -> Result<()> {
-    let status = Command::new("claude")
+    use std::io::Write;
+    use std::process::Stdio;
+
+    // Use stdin to pass the prompt to avoid "Argument list too long" errors
+    // when the prompt (system prompt + MR diff) is very large.
+    let mut child = Command::new("claude")
         .arg("-p")
-        .arg(prompt)
         .arg("--dangerously-skip-permissions")
         .current_dir(work_dir)
-        .status()
-        .context("Failed to run claude")?;
+        .stdin(Stdio::piped())
+        .spawn()
+        .context("Failed to spawn claude")?;
+
+    // Write prompt to stdin
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(prompt.as_bytes())
+            .context("Failed to write prompt to stdin")?;
+    }
+
+    let status = child.wait().context("Failed to wait for claude")?;
 
     if !status.success() {
         bail!("Claude exited with status {}", status);
