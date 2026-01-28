@@ -8,13 +8,36 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClaudeInput {
-    User { content: String },
+    User { message: UserInputMessage },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UserInputMessage {
+    pub role: String,
+    pub content: String,
+}
+
+impl ClaudeInput {
+    pub fn user(content: String) -> Self {
+        Self::User {
+            message: UserInputMessage {
+                role: "user".into(),
+                content,
+            },
+        }
+    }
 }
 
 /// Output message from Claude Code (stream-json format).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClaudeOutput {
+    /// User message echo (tool results).
+    User {
+        #[serde(flatten)]
+        _extra: serde_json::Value,
+    },
+
     /// System information at start.
     System {
         subtype: String,
@@ -26,7 +49,8 @@ pub enum ClaudeOutput {
 
     /// Assistant message content.
     Assistant {
-        subtype: AssistantSubtype,
+        #[serde(default)]
+        subtype: Option<AssistantSubtype>,
         #[serde(default)]
         message: Option<AssistantMessage>,
     },

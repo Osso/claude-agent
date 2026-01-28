@@ -26,8 +26,10 @@ impl ClaudeProcess {
         info!(cwd = %working_dir.display(), "Spawning Claude Code process");
 
         let mut child = Command::new("claude")
+            .arg("--print")
             .args(["--input-format", "stream-json"])
             .args(["--output-format", "stream-json"])
+            .arg("--verbose")
             .args(["--dangerously-skip-permissions"]) // Running in isolated container
             .current_dir(working_dir)
             .stdin(Stdio::piped())
@@ -55,9 +57,7 @@ impl ClaudeProcess {
         debug!(content_len = content.len(), "Sending message to Claude");
 
         // Send input
-        let input = ClaudeInput::User {
-            content: content.into(),
-        };
+        let input = ClaudeInput::user(content.into());
         let json = serde_json::to_string(&input)?;
         writeln!(self.stdin, "{json}")?;
         self.stdin.flush()?;
