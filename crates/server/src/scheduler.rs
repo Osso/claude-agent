@@ -22,7 +22,7 @@ use crate::queue::{Queue, QueueItem};
 
 const NAMESPACE: &str = "claude-agent";
 const WORKER_IMAGE: &str = "registry.digitalocean.com/globalcomix/claude-agent-worker:latest";
-const JOB_TTL_SECONDS: i32 = 3600; // 1 hour
+const JOB_TTL_SECONDS: i32 = 900; // 15 minutes after completion
 
 /// Job scheduler that processes the queue sequentially.
 pub struct Scheduler {
@@ -264,7 +264,7 @@ impl Scheduler {
 
     /// Wait for a job to complete.
     async fn wait_for_job(&self, job_name: &str) -> Result<bool, kube::Error> {
-        let timeout = Duration::from_secs(1800); // 30 minutes max
+        let timeout = Duration::from_secs(900); // 15 minutes max
         let start = std::time::Instant::now();
         let mut not_found_count = 0;
 
