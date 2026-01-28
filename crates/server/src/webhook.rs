@@ -56,6 +56,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/failed", get(list_failed_handler))
         .route("/api/retry/{id}", post(retry_handler))
         .route("/api/review", post(queue_review_handler))
+        .route("/api/review/github", post(queue_github_review_handler))
         // Legacy endpoint
         .route("/queue/stats", get(queue_stats_handler))
         .with_state(Arc::new(state))
@@ -442,6 +443,101 @@ async fn queue_review_handler(
             "job_id": job_id,
         })),
     ))
+}
+
+/// Queue a GitHub PR review via API.
+#[derive(Deserialize)]
+struct QueueGithubReviewRequest {
+    /// Repository (e.g., "owner/repo")
+    repo: String,
+    /// Pull request number
+    pr: u64,
+    /// Action: "open" (default) or "lint_fix"
+    #[serde(default)]
+    action: Option<String>,
+}
+
+async fn queue_github_review_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<QueueGithubReviewRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    if !state.verify_api_key(&headers) {
+        warn!("Invalid API key for /api/review/github");
+        return Err(AppError::Unauthorized);
+    }
+
+    let github_token = state
+        .github_token
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("GitHub token not configured".into()))?;
+
+    let mut payload = fetch_github_pr_payload(&req.repo, req.pr, github_token)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to fetch PR from GitHub: {e}")))?;
+
+    if let Some(action) = &req.action {
+        payload.action = action.clone();
+    }
+
+    let job_id = state.queue.push(payload).await.map_err(AppError::Redis)?;
+
+    info!(
+        job_id = %job_id,
+        repo = %req.repo,
+        pr = %req.pr,
+        "Queued GitHub review via API"
+    );
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({
+            "status": "queued",
+            "job_id": job_id,
+        })),
+    ))
+}
+
+/// Fetch PR details from GitHub API and build a ReviewPayload.
+async fn fetch_github_pr_payload(repo: &str, pr: u64, token: &str) -> anyhow::Result<ReviewPayload> {
+    let client = reqwest::Client::new();
+
+    // Fetch PR
+    let pr_url = format!("https://api.github.com/repos/{}/pulls/{}", repo, pr);
+    let pr_resp: serde_json::Value = client
+        .get(&pr_url)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("User-Agent", "claude-agent")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    let title = pr_resp["title"].as_str().unwrap_or("").to_string();
+    let description = pr_resp["body"].as_str().map(|s| s.to_string());
+    let source_branch = pr_resp["head"]["ref"].as_str().unwrap_or("").to_string();
+    let target_branch = pr_resp["base"]["ref"].as_str().unwrap_or("").to_string();
+    let author = pr_resp["user"]["login"].as_str().unwrap_or("").to_string();
+    let clone_url = pr_resp["head"]["repo"]["clone_url"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    Ok(ReviewPayload {
+        project: repo.to_string(),
+        mr_iid: pr.to_string(),
+        title,
+        description,
+        source_branch,
+        target_branch,
+        author,
+        clone_url,
+        action: "open".to_string(),
+        gitlab_url: String::new(),
+        platform: "github".to_string(),
+    })
 }
 
 /// Application error type.

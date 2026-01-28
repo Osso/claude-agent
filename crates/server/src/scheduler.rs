@@ -171,6 +171,7 @@ impl Scheduler {
             },
             spec: Some(JobSpec {
                 ttl_seconds_after_finished: Some(JOB_TTL_SECONDS),
+                active_deadline_seconds: Some(900), // 15 minute hard timeout enforced by K8s
                 backoff_limit: Some(0), // No retries
                 template: PodTemplateSpec {
                     metadata: Some(kube::api::ObjectMeta {

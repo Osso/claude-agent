@@ -120,6 +120,17 @@ enum Commands {
         gitlab_url: String,
     },
 
+    /// Trigger a review for a GitHub PR
+    ReviewGithub {
+        /// Repository (e.g., owner/repo)
+        #[arg(long, short)]
+        repo: String,
+
+        /// Pull request number
+        #[arg(long, short)]
+        pr: u64,
+    },
+
     /// Show queue statistics
     Stats,
 
@@ -268,6 +279,12 @@ async fn main() -> Result<()> {
         } => {
             let id = api_queue_review(&server_url, &api_key, &project, mr, &gitlab_url, Some("lint_fix")).await?;
             println!("Queued lint-fix for !{} in {}", mr, project);
+            println!("Job ID: {id}");
+        }
+
+        Commands::ReviewGithub { repo, pr } => {
+            let id = api_queue_github_review(&server_url, &api_key, &repo, pr, None).await?;
+            println!("Queued review for #{} in {}", pr, repo);
             println!("Job ID: {id}");
         }
 
@@ -725,6 +742,49 @@ async fn api_queue_review(
         .send()
         .await
         .context("Failed to queue review")?;
+
+    if !resp.status().is_success() {
+        bail!("API error: {} - {}", resp.status(), resp.text().await?);
+    }
+
+    #[derive(Deserialize)]
+    struct QueueResponse {
+        job_id: String,
+    }
+
+    let result: QueueResponse = resp
+        .json()
+        .await
+        .context("Failed to parse queue response")?;
+
+    Ok(result.job_id)
+}
+
+/// Queue a GitHub PR review via HTTP API.
+async fn api_queue_github_review(
+    server_url: &str,
+    api_key: &str,
+    repo: &str,
+    pr: u64,
+    action: Option<&str>,
+) -> Result<String> {
+    let client = create_api_client(api_key)?;
+    let url = format!("{}/api/review/github", server_url.trim_end_matches('/'));
+
+    let mut body = serde_json::json!({
+        "repo": repo,
+        "pr": pr,
+    });
+    if let Some(action) = action {
+        body["action"] = serde_json::json!(action);
+    }
+
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .context("Failed to queue GitHub review")?;
 
     if !resp.status().is_success() {
         bail!("API error: {} - {}", resp.status(), resp.text().await?);
