@@ -7,33 +7,16 @@ NAMESPACE="claude-agent"
 
 echo "=== Deploying claude-agent (tag: $TAG) ==="
 
-# Build and push server
-echo ""
-echo "=== Building server ==="
-docker build -f Dockerfile.server \
-    -t "$REGISTRY/claude-agent-server:$TAG" \
-    -t "$REGISTRY/claude-agent-server:latest" \
-    .
+# Build images
+./build.sh "$TAG"
 
+# Push server
 echo ""
 echo "=== Pushing server ==="
 docker push "$REGISTRY/claude-agent-server:$TAG"
 docker push "$REGISTRY/claude-agent-server:latest"
 
-# Build and push worker
-echo ""
-echo "=== Building worker ==="
-GITLAB_CLI_DIR="${GITLAB_CLI_DIR:-$HOME/Projects/cli/gitlab}"
-GITHUB_CLI_DIR="${GITHUB_CLI_DIR:-$HOME/Projects/cli/github}"
-SENTRY_CLI_DIR="${SENTRY_CLI_DIR:-$HOME/Projects/cli/sentry}"
-docker build -f Dockerfile.worker \
-    --build-context "gitlab-cli=$GITLAB_CLI_DIR" \
-    --build-context "github-cli=$GITHUB_CLI_DIR" \
-    --build-context "sentry-cli=$SENTRY_CLI_DIR" \
-    -t "$REGISTRY/claude-agent-worker:$TAG" \
-    -t "$REGISTRY/claude-agent-worker:latest" \
-    .
-
+# Push worker
 echo ""
 echo "=== Pushing worker ==="
 docker push "$REGISTRY/claude-agent-worker:$TAG"
