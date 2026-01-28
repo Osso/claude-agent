@@ -28,20 +28,14 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Verify API key from Authorization header.
+    /// Verify API key from Authorization: Bearer header.
     fn verify_api_key(&self, headers: &HeaderMap) -> bool {
         let expected = self.api_key.as_ref().unwrap_or(&self.webhook_secret);
 
-        // Check Authorization: Bearer <token>
         if let Some(auth) = headers.get("Authorization").and_then(|v| v.to_str().ok()) {
             if let Some(token) = auth.strip_prefix("Bearer ") {
                 return token == expected;
             }
-        }
-
-        // Also accept X-API-Key header
-        if let Some(key) = headers.get("X-API-Key").and_then(|v| v.to_str().ok()) {
-            return key == expected;
         }
 
         false
