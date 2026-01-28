@@ -476,6 +476,14 @@ fn is_safe_command(cmd: &str) -> bool {
         "rg ",
         "ls ",
         "find ",
+        "php -l",
+        "php --syntax-check",
+        "mago lint",
+        "jq ",
+        "github pr ",
+        "gitlab mr ",
+        "sentry ",
+        "jira ",
     ];
 
     let cmd_lower = cmd.to_lowercase();

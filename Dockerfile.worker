@@ -35,6 +35,43 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release && \
     cp target/release/gitlab /build/gitlab-bin
 
+# Build github CLI from separate source
+FROM rust:1.92-bookworm AS github-builder
+
+WORKDIR /build
+COPY --from=github-cli . .
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo build --release && \
+    cp target/release/github /build/github-bin
+
+# Build sentry CLI from separate source
+FROM rust:1.92-bookworm AS sentry-builder
+
+WORKDIR /build
+COPY --from=sentry-cli . .
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo build --release && \
+    cp target/release/sentry /build/sentry-bin
+
+# Build mago PHP linter
+FROM rust:1.92-bookworm AS mago-builder
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo install mago --root /build
+
+# Build jira CLI (Go)
+FROM golang:1.23-bookworm AS jira-builder
+
+RUN go install github.com/ankitpokhrel/jira-cli/cmd/jira@latest && \
+    cp /go/bin/jira /jira-bin
+
 # Runtime stage with Claude Code
 FROM debian:bookworm-slim
 
@@ -43,6 +80,9 @@ RUN apt-get update && \
         ca-certificates \
         git \
         curl \
+        jq \
+        ripgrep \
+        php-cli \
         && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js (required for Claude Code)
@@ -53,6 +93,13 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
 # Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
+# Install Rust toolchain (for cargo check/clippy in reviews)
+COPY --from=rust:1.92-bookworm /usr/local/rustup /usr/local/rustup
+COPY --from=rust:1.92-bookworm /usr/local/cargo /usr/local/cargo
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV CARGO_HOME=/usr/local/cargo
+ENV PATH="/usr/local/cargo/bin:${PATH}"
+
 # Create non-root user
 RUN groupadd -g 1000 app && \
     useradd -u 1000 -g app -s /bin/bash -m app
@@ -61,6 +108,10 @@ WORKDIR /app
 
 COPY --from=builder /build/claude-agent-worker-bin /app/claude-agent-worker
 COPY --from=gitlab-builder /build/gitlab-bin /usr/local/bin/gitlab
+COPY --from=github-builder /build/github-bin /usr/local/bin/github
+COPY --from=sentry-builder /build/sentry-bin /usr/local/bin/sentry
+COPY --from=mago-builder /build/bin/mago /usr/local/bin/mago
+COPY --from=jira-builder /jira-bin /usr/local/bin/jira
 
 # Create work directory
 RUN mkdir -p /work && chown app:app /work

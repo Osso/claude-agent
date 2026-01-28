@@ -24,8 +24,12 @@ docker push "$REGISTRY/claude-agent-server:latest"
 echo ""
 echo "=== Building worker ==="
 GITLAB_CLI_DIR="${GITLAB_CLI_DIR:-$HOME/Projects/cli/gitlab}"
+GITHUB_CLI_DIR="${GITHUB_CLI_DIR:-$HOME/Projects/cli/github}"
+SENTRY_CLI_DIR="${SENTRY_CLI_DIR:-$HOME/Projects/cli/sentry}"
 docker build -f Dockerfile.worker \
     --build-context "gitlab-cli=$GITLAB_CLI_DIR" \
+    --build-context "github-cli=$GITHUB_CLI_DIR" \
+    --build-context "sentry-cli=$SENTRY_CLI_DIR" \
     -t "$REGISTRY/claude-agent-worker:$TAG" \
     -t "$REGISTRY/claude-agent-worker:latest" \
     .
