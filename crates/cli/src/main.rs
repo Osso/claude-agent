@@ -105,6 +105,21 @@ enum Commands {
         gitlab_url: String,
     },
 
+    /// Trigger lint-fix for an MR (reads CI linter output, fixes code, pushes)
+    LintFix {
+        /// Project path (e.g., Globalcomix/gc)
+        #[arg(long, short)]
+        project: String,
+
+        /// Merge request IID
+        #[arg(long, short)]
+        mr: u64,
+
+        /// GitLab URL (defaults to gitlab.com)
+        #[arg(long, default_value = "https://gitlab.com")]
+        gitlab_url: String,
+    },
+
     /// Show queue statistics
     Stats,
 
@@ -241,8 +256,18 @@ async fn main() -> Result<()> {
             mr,
             gitlab_url,
         } => {
-            let id = api_queue_review(&server_url, &api_key, &project, mr, &gitlab_url).await?;
+            let id = api_queue_review(&server_url, &api_key, &project, mr, &gitlab_url, None).await?;
             println!("Queued review for !{} in {}", mr, project);
+            println!("Job ID: {id}");
+        }
+
+        Commands::LintFix {
+            project,
+            mr,
+            gitlab_url,
+        } => {
+            let id = api_queue_review(&server_url, &api_key, &project, mr, &gitlab_url, Some("lint_fix")).await?;
+            println!("Queued lint-fix for !{} in {}", mr, project);
             println!("Job ID: {id}");
         }
 
@@ -680,17 +705,23 @@ async fn api_queue_review(
     project: &str,
     mr_iid: u64,
     gitlab_url: &str,
+    action: Option<&str>,
 ) -> Result<String> {
     let client = create_api_client(api_key)?;
     let url = format!("{}/api/review", server_url.trim_end_matches('/'));
 
+    let mut body = serde_json::json!({
+        "project": project,
+        "mr_iid": mr_iid,
+        "gitlab_url": gitlab_url,
+    });
+    if let Some(action) = action {
+        body["action"] = serde_json::json!(action);
+    }
+
     let resp = client
         .post(&url)
-        .json(&serde_json::json!({
-            "project": project,
-            "mr_iid": mr_iid,
-            "gitlab_url": gitlab_url,
-        }))
+        .json(&body)
         .send()
         .await
         .context("Failed to queue review")?;

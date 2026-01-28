@@ -398,6 +398,9 @@ struct QueueReviewRequest {
     /// GitLab base URL (defaults to https://gitlab.com)
     #[serde(default = "default_gitlab_url")]
     gitlab_url: String,
+    /// Action: "open" (default) or "lint_fix"
+    #[serde(default)]
+    action: Option<String>,
 }
 
 fn default_gitlab_url() -> String {
@@ -415,9 +418,13 @@ async fn queue_review_handler(
     }
 
     // Fetch MR details from GitLab
-    let payload = fetch_review_payload(&req.gitlab_url, &req.project, req.mr_iid, &state.gitlab_token)
+    let mut payload = fetch_review_payload(&req.gitlab_url, &req.project, req.mr_iid, &state.gitlab_token)
         .await
         .map_err(|e| AppError::Internal(format!("Failed to fetch MR from GitLab: {e}")))?;
+
+    if let Some(action) = &req.action {
+        payload.action = action.clone();
+    }
 
     let job_id = state.queue.push(payload).await.map_err(AppError::Redis)?;
 

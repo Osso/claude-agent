@@ -30,6 +30,7 @@ kubectl logs -n claude-agent -l app=claude-agent-server -f  # Server logs
 ```bash
 claude-agent info -p Globalcomix/gc -m <iid> --token "$TOKEN"  # Show MR info
 claude-agent review -p Globalcomix/gc -m <iid> --token "$TOKEN"  # Queue review
+claude-agent lint-fix -p Globalcomix/gc -m <iid>                # Queue lint-fix job
 claude-agent stats                            # Queue statistics
 claude-agent list-failed                      # List failed items
 claude-agent jobs [-a]                        # List K8s jobs
