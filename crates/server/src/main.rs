@@ -32,7 +32,7 @@ async fn main() -> Result<()> {
         .with_target(false)
         .init();
 
-    const VERSION: &str = "2026.01.27.2";
+    const VERSION: &str = "2026.01.28.1";
     info!(version = VERSION, "Claude Agent Server starting");
 
     // Get configuration from environment

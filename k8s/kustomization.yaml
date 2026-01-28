@@ -10,9 +10,3 @@ resources:
   - secrets.yaml
   - deployment.yaml
   - service.yaml
-
-images:
-  - name: registry.digitalocean.com/globalcomix/claude-agent-server
-    newTag: "2026.01.27"
-  - name: registry.digitalocean.com/globalcomix/claude-agent-worker
-    newTag: "2026.01.27"
