@@ -84,6 +84,44 @@ impl ClaudeProcess {
 
             match serde_json::from_str::<ClaudeOutput>(trimmed) {
                 Ok(output) => {
+                    // Log progress for visibility
+                    match &output {
+                        ClaudeOutput::System { subtype, .. } => {
+                            info!(subtype = %subtype, "Claude session started");
+                        }
+                        ClaudeOutput::Assistant { subtype, message } => {
+                            if let (Some(subtype), Some(msg)) = (subtype, message) {
+                                match subtype {
+                                    crate::output::AssistantSubtype::ToolUse => {
+                                        for block in &msg.content {
+                                            if let crate::output::ContentBlock::ToolUse { name, .. } = block {
+                                                info!(tool = %name, "Claude using tool");
+                                            }
+                                        }
+                                    }
+                                    crate::output::AssistantSubtype::Text => {
+                                        // Log text preview (first 100 chars)
+                                        if let Some(text) = output.text() {
+                                            let preview: String = text.chars().take(100).collect();
+                                            debug!(preview = %preview, "Claude text output");
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        ClaudeOutput::Result { is_error, total_cost_usd, usage, .. } => {
+                            let tokens = usage.as_ref().map(|u| u.input_tokens + u.output_tokens).unwrap_or(0);
+                            info!(
+                                is_error = %is_error,
+                                cost_usd = ?total_cost_usd,
+                                total_tokens = tokens,
+                                "Claude completed"
+                            );
+                        }
+                        _ => {}
+                    }
+
                     let is_result = output.is_result();
                     outputs.push(output);
 
