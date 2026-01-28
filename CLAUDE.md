@@ -139,11 +139,33 @@ kubectl rollout status deployment/claude-agent-server -n claude-agent
 # Start server + valkey
 docker compose up -d
 
-# Send test webhook
+# Send test webhook (merge request opened event)
 curl -X POST http://localhost:8443/webhook/gitlab \
   -H "X-Gitlab-Token: test" \
   -H "Content-Type: application/json" \
-  -d '{"object_kind":"merge_request",...}'
+  -d '{
+    "object_kind": "merge_request",
+    "event_type": "merge_request",
+    "user": {"id": 1, "name": "Test", "username": "test"},
+    "project": {
+      "id": 1,
+      "name": "test",
+      "path_with_namespace": "group/test",
+      "web_url": "https://gitlab.com/group/test",
+      "git_http_url": "https://gitlab.com/group/test.git"
+    },
+    "object_attributes": {
+      "id": 1,
+      "iid": 123,
+      "title": "Test MR",
+      "source_branch": "feature",
+      "target_branch": "main",
+      "state": "opened",
+      "action": "open",
+      "url": "https://gitlab.com/group/test/-/merge_requests/123",
+      "author_id": 1
+    }
+  }'
 ```
 
 ## Security Notes
