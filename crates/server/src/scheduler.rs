@@ -154,8 +154,9 @@ impl Scheduler {
     /// Spawn a K8s Job for the review.
     async fn spawn_job(&self, item: &QueueItem) -> Result<String, kube::Error> {
         let job_name = format!(
-            "claude-review-{}-{}",
-            item.payload.mr_iid,
+            "{}-{}-{}",
+            item.payload.job_prefix(),
+            item.payload.issue_id(),
             &item.id[..8]
         );
 
@@ -234,6 +235,18 @@ impl Scheduler {
                                         secret_key_ref: Some(SecretKeySelector {
                                             name: "claude-agent-secrets".into(),
                                             key: "github-token".into(),
+                                            optional: Some(true),
+                                        }),
+                                        ..Default::default()
+                                    }),
+                                    ..Default::default()
+                                },
+                                EnvVar {
+                                    name: "SENTRY_AUTH_TOKEN".into(),
+                                    value_from: Some(EnvVarSource {
+                                        secret_key_ref: Some(SecretKeySelector {
+                                            name: "claude-agent-secrets".into(),
+                                            key: "sentry-auth-token".into(),
                                             optional: Some(true),
                                         }),
                                         ..Default::default()

@@ -131,6 +131,21 @@ enum Commands {
         pr: u64,
     },
 
+    /// Trigger a Sentry fix job
+    SentryFix {
+        /// Sentry organization
+        #[arg(long, short)]
+        org: String,
+
+        /// Sentry project slug
+        #[arg(long, short)]
+        project: String,
+
+        /// Sentry issue ID (numeric or short ID like "WEB-123")
+        #[arg(long, short)]
+        issue: String,
+    },
+
     /// Show queue statistics
     Stats,
 
@@ -288,6 +303,12 @@ async fn main() -> Result<()> {
             println!("Job ID: {id}");
         }
 
+        Commands::SentryFix { org, project, issue } => {
+            let id = api_queue_sentry_fix(&server_url, &api_key, &org, &project, &issue).await?;
+            println!("Queued Sentry fix for {} in {}/{}", issue, org, project);
+            println!("Job ID: {id}");
+        }
+
         Commands::Stats => {
             api_stats(&server_url, &api_key).await?;
         }
@@ -305,10 +326,24 @@ async fn main() -> Result<()> {
 }
 
 fn print_failed_item(item: &FailedItem) {
+    use claude_agent_server::JobPayload;
+
     println!("  ID:       {}", item.item.id);
-    println!("  Project:  {}", item.item.payload.project);
-    println!("  MR:       !{}", item.item.payload.mr_iid);
-    println!("  Title:    {}", item.item.payload.title);
+    println!("  Job:      {}", item.item.payload.description());
+
+    match &item.item.payload {
+        JobPayload::Review(p) => {
+            println!("  Project:  {}", p.project);
+            println!("  MR:       !{}", p.mr_iid);
+            println!("  Title:    {}", p.title);
+        }
+        JobPayload::SentryFix(p) => {
+            println!("  Project:  {}", p.vcs_project);
+            println!("  Issue:    {}", p.short_id);
+            println!("  Title:    {}", p.title);
+        }
+    }
+
     println!("  Attempts: {}", item.item.attempts);
     println!("  Error:    {}", item.error);
     println!("  Failed:   {}", item.failed_at);
@@ -796,6 +831,47 @@ async fn api_queue_github_review(
     }
 
     let result: QueueResponse = resp
+        .json()
+        .await
+        .context("Failed to parse queue response")?;
+
+    Ok(result.job_id)
+}
+
+/// Queue a Sentry fix via HTTP API.
+async fn api_queue_sentry_fix(
+    server_url: &str,
+    api_key: &str,
+    org: &str,
+    project: &str,
+    issue_id: &str,
+) -> Result<String> {
+    let client = create_api_client(api_key)?;
+    let url = format!("{}/api/sentry-fix", server_url.trim_end_matches('/'));
+
+    let body = serde_json::json!({
+        "organization": org,
+        "project": project,
+        "issue_id": issue_id,
+    });
+
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .context("Failed to queue Sentry fix")?;
+
+    if !resp.status().is_success() {
+        bail!("API error: {} - {}", resp.status(), resp.text().await?);
+    }
+
+    #[derive(Deserialize)]
+    struct QueueSentryResponse {
+        job_id: String,
+    }
+
+    let result: QueueSentryResponse = resp
         .json()
         .await
         .context("Failed to parse queue response")?;

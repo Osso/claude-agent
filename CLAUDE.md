@@ -31,6 +31,7 @@ kubectl logs -n claude-agent -l app=claude-agent-server -f  # Server logs
 claude-agent info -p Globalcomix/gc -m <iid> --token "$TOKEN"  # Show MR info
 claude-agent review -p Globalcomix/gc -m <iid> --token "$TOKEN"  # Queue review
 claude-agent lint-fix -p Globalcomix/gc -m <iid>                # Queue lint-fix job
+claude-agent sentry-fix -o <org> -p <project> -i <issue>        # Queue Sentry fix
 claude-agent stats                            # Queue statistics
 claude-agent list-failed                      # List failed items
 claude-agent jobs [-a]                        # List K8s jobs
@@ -41,11 +42,11 @@ claude-agent retry <id>                       # Retry failed item
 ## Architecture
 
 ```
-GitLab Webhook → Server → Redis Queue → Scheduler → K8s Job (Worker)
-                                                         ↓
-                                                    Claude Code CLI
-                                                         ↓
-                                                    GitLab API
+GitLab/GitHub/Sentry Webhook → Server → Redis Queue → Scheduler → K8s Job (Worker)
+                                                                        ↓
+                                                                   Claude Code CLI
+                                                                        ↓
+                                                               GitLab/GitHub API (create MR/PR)
 ```
 
 ### Crates
@@ -54,7 +55,7 @@ GitLab Webhook → Server → Redis Queue → Scheduler → K8s Job (Worker)
 |-------|---------|
 | `core` | Agent loop, event types, state management |
 | `claude` | Claude Code CLI integration (spawn, parse output) |
-| `agents` | Agent implementations (MR reviewer) |
+| `agents` | Agent implementations (MR reviewer, Sentry fixer) |
 | `server` | Webhook handler, Redis queue, K8s scheduler |
 | `worker` | Ephemeral K8s job entry point |
 | `cli` | Queue management CLI |
@@ -62,8 +63,11 @@ GitLab Webhook → Server → Redis Queue → Scheduler → K8s Job (Worker)
 ## Key Files
 
 - `crates/agents/src/mr_reviewer.rs` - MR review system prompt and tool definitions
+- `crates/agents/src/sentry_fixer.rs` - Sentry fix system prompt
 - `crates/server/src/scheduler.rs` - K8s Job spawning logic
 - `crates/server/src/gitlab.rs` - GitLab webhook event parsing
+- `crates/server/src/sentry.rs` - Sentry webhook event parsing
+- `crates/server/src/sentry_api.rs` - Sentry API client
 - `k8s/network-policy.yaml` - Network isolation rules
 
 ## Configuration
@@ -74,9 +78,30 @@ GitLab Webhook → Server → Redis Queue → Scheduler → K8s Job (Worker)
 | `WEBHOOK_SECRET` | GitLab webhook token | Server |
 | `API_KEY` | API key for CLI access (defaults to WEBHOOK_SECRET) | Server (optional) |
 | `LISTEN_ADDR` | Server listen address | Server (default: 0.0.0.0:8443) |
+| `SENTRY_WEBHOOK_SECRET` | Sentry webhook HMAC secret | Server (optional) |
+| `SENTRY_ORGANIZATION` | Default Sentry organization | Server (optional) |
+| `SENTRY_PROJECT_MAPPINGS` | JSON array mapping Sentry projects to repos | Server (optional) |
 | `GITLAB_TOKEN` | GitLab API token | Worker |
+| `GITHUB_TOKEN` | GitHub API token | Worker (optional) |
 | `ANTHROPIC_API_KEY` | Anthropic API key | Worker |
+| `SENTRY_AUTH_TOKEN` | Sentry API token (for fetching events) | Worker (optional) |
 | `REVIEW_PAYLOAD` | Base64-encoded job payload | Worker (set by scheduler) |
+
+### Sentry Project Mappings
+
+The `SENTRY_PROJECT_MAPPINGS` environment variable is a JSON array mapping Sentry projects to VCS repositories:
+
+```json
+[
+  {
+    "sentry_project": "globalcomix-web",
+    "clone_url": "https://gitlab.com/Globalcomix/gc.git",
+    "vcs_platform": "gitlab",
+    "vcs_project": "Globalcomix/gc",
+    "target_branch": "master"
+  }
+]
+```
 
 ### CLI Configuration
 

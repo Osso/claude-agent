@@ -15,7 +15,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::github::{verify_signature, PullRequestEvent};
 use crate::gitlab::{fetch_review_payload, MergeRequestEvent, PipelineEvent, ReviewPayload};
+use crate::payload::SentryFixPayload;
 use crate::queue::Queue;
+use crate::sentry::{self, SentryProjectMapping, SentryWebhookEvent};
 
 /// Application state shared across handlers.
 #[derive(Clone)]
@@ -28,6 +30,12 @@ pub struct AppState {
     pub gitlab_token: String,
     /// GitHub API token (optional, for GitHub webhook support)
     pub github_token: Option<String>,
+    /// Sentry webhook secret (optional, for Sentry webhook support)
+    pub sentry_webhook_secret: Option<String>,
+    /// Sentry organization
+    pub sentry_organization: Option<String>,
+    /// Sentry project mappings
+    pub sentry_project_mappings: Vec<SentryProjectMapping>,
 }
 
 impl AppState {
@@ -51,12 +59,14 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health_handler))
         .route("/webhook/gitlab", post(gitlab_webhook_handler))
         .route("/webhook/github", post(github_webhook_handler))
+        .route("/webhook/sentry", post(sentry_webhook_handler))
         // API endpoints for CLI
         .route("/api/stats", get(queue_stats_handler))
         .route("/api/failed", get(list_failed_handler))
         .route("/api/retry/{id}", post(retry_handler))
         .route("/api/review", post(queue_review_handler))
         .route("/api/review/github", post(queue_github_review_handler))
+        .route("/api/sentry-fix", post(queue_sentry_fix_handler))
         // Legacy endpoint
         .route("/queue/stats", get(queue_stats_handler))
         .with_state(Arc::new(state))
@@ -339,6 +349,114 @@ async fn github_webhook_handler(
     ))
 }
 
+/// Sentry webhook handler.
+async fn sentry_webhook_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<impl IntoResponse, AppError> {
+    // Check if Sentry webhook is configured
+    let sentry_secret = state
+        .sentry_webhook_secret
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("Sentry webhook not configured".into()))?;
+
+    // Verify HMAC-SHA256 signature
+    let signature = headers
+        .get("Sentry-Hook-Signature")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if !sentry::verify_signature(sentry_secret, &body, signature) {
+        warn!("Invalid Sentry webhook signature");
+        return Err(AppError::Unauthorized);
+    }
+
+    // Log raw body for debugging
+    if let Ok(body_str) = std::str::from_utf8(&body) {
+        debug!(body = %body_str, "Raw Sentry webhook body");
+    }
+
+    // Parse event
+    let event: SentryWebhookEvent = serde_json::from_slice(&body).map_err(|e| {
+        if let Ok(body_str) = std::str::from_utf8(&body) {
+            error!(error = %e, body = %body_str, "Failed to parse Sentry webhook body");
+        }
+        AppError::BadRequest(format!("Invalid JSON: {e}"))
+    })?;
+
+    info!(
+        action = %event.action,
+        issue_id = %event.data.issue.short_id,
+        project = %event.data.issue.project.slug,
+        "Received Sentry webhook"
+    );
+
+    if !event.should_fix() {
+        debug!("Sentry event does not require fixing");
+        return Ok((
+            StatusCode::OK,
+            Json(WebhookResponse {
+                status: "ignored".into(),
+                message: Some("Event does not require fixing".into()),
+                job_id: None,
+            }),
+        ));
+    }
+
+    // Find project mapping
+    let issue = event.issue();
+    let mapping = state
+        .sentry_project_mappings
+        .iter()
+        .find(|m| m.sentry_project == issue.project.slug)
+        .ok_or_else(|| {
+            warn!(
+                project = %issue.project.slug,
+                "No project mapping for Sentry project"
+            );
+            AppError::BadRequest(format!(
+                "No project mapping for Sentry project: {}",
+                issue.project.slug
+            ))
+        })?;
+
+    let organization = state
+        .sentry_organization
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("SENTRY_ORGANIZATION not configured".into()))?;
+
+    let payload = SentryFixPayload {
+        issue_id: issue.id.clone(),
+        short_id: issue.short_id.clone(),
+        title: issue.title.clone(),
+        culprit: issue.culprit.clone(),
+        platform: issue.platform.clone(),
+        issue_type: issue.issue_type.clone().unwrap_or_else(|| "error".into()),
+        issue_category: issue.issue_category.clone().unwrap_or_else(|| "error".into()),
+        web_url: issue.web_url.clone().unwrap_or_default(),
+        project_slug: issue.project.slug.clone(),
+        organization: organization.clone(),
+        clone_url: mapping.clone_url.clone(),
+        target_branch: mapping.target_branch.clone(),
+        vcs_platform: mapping.vcs_platform.clone(),
+        vcs_project: mapping.vcs_project.clone(),
+    };
+
+    let job_id = state.queue.push(payload).await.map_err(AppError::Redis)?;
+
+    info!(job_id = %job_id, issue = %issue.short_id, "Queued Sentry fix job");
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(WebhookResponse {
+            status: "queued".into(),
+            message: None,
+            job_id: Some(job_id),
+        }),
+    ))
+}
+
 /// List failed items handler (requires API key).
 async fn list_failed_handler(
     State(state): State<Arc<AppState>>,
@@ -538,6 +656,79 @@ async fn fetch_github_pr_payload(repo: &str, pr: u64, token: &str) -> anyhow::Re
         gitlab_url: String::new(),
         platform: "github".to_string(),
     })
+}
+
+/// Queue a Sentry fix via API.
+#[derive(Deserialize)]
+struct QueueSentryFixRequest {
+    /// Sentry organization
+    organization: String,
+    /// Sentry project slug
+    project: String,
+    /// Sentry issue ID (numeric or short ID like "WEB-123")
+    issue_id: String,
+}
+
+async fn queue_sentry_fix_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<QueueSentryFixRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    if !state.verify_api_key(&headers) {
+        warn!("Invalid API key for /api/sentry-fix");
+        return Err(AppError::Unauthorized);
+    }
+
+    // Find project mapping
+    let mapping = state
+        .sentry_project_mappings
+        .iter()
+        .find(|m| m.sentry_project == req.project)
+        .ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "No project mapping for Sentry project: {}",
+                req.project
+            ))
+        })?;
+
+    // We'll construct a minimal payload - the worker will fetch full details
+    let payload = SentryFixPayload {
+        issue_id: req.issue_id.clone(),
+        short_id: req.issue_id.clone(), // Will be overwritten by worker if numeric ID
+        title: String::new(),           // Worker will fetch
+        culprit: String::new(),         // Worker will fetch
+        platform: String::new(),        // Worker will fetch
+        issue_type: "error".into(),
+        issue_category: "error".into(),
+        web_url: format!(
+            "https://sentry.io/organizations/{}/issues/{}/",
+            req.organization, req.issue_id
+        ),
+        project_slug: req.project.clone(),
+        organization: req.organization.clone(),
+        clone_url: mapping.clone_url.clone(),
+        target_branch: mapping.target_branch.clone(),
+        vcs_platform: mapping.vcs_platform.clone(),
+        vcs_project: mapping.vcs_project.clone(),
+    };
+
+    let job_id = state.queue.push(payload).await.map_err(AppError::Redis)?;
+
+    info!(
+        job_id = %job_id,
+        org = %req.organization,
+        project = %req.project,
+        issue = %req.issue_id,
+        "Queued Sentry fix via API"
+    );
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({
+            "status": "queued",
+            "job_id": job_id,
+        })),
+    ))
 }
 
 /// Application error type.

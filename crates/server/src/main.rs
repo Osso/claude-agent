@@ -15,12 +15,16 @@ use tracing_subscriber::EnvFilter;
 
 mod github;
 mod gitlab;
+mod payload;
 mod queue;
 mod scheduler;
+mod sentry;
+mod sentry_api;
 mod webhook;
 
 use queue::Queue;
 use scheduler::Scheduler;
+use sentry::SentryProjectMapping;
 use webhook::{router, AppState};
 
 #[tokio::main]
@@ -35,7 +39,7 @@ async fn main() -> Result<()> {
         .with_target(false)
         .init();
 
-    const VERSION: &str = "2026.01.28.5";
+    const VERSION: &str = "2026.01.28.6";
     info!(version = VERSION, "Claude Agent Server starting");
 
     // Get configuration from environment
@@ -44,6 +48,9 @@ async fn main() -> Result<()> {
     let api_key = env::var("API_KEY").ok(); // Optional, defaults to webhook_secret
     let gitlab_token = env::var("GITLAB_TOKEN").context("GITLAB_TOKEN not set")?;
     let github_token = env::var("GITHUB_TOKEN").ok();
+    let sentry_webhook_secret = env::var("SENTRY_WEBHOOK_SECRET").ok();
+    let sentry_organization = env::var("SENTRY_ORGANIZATION").ok();
+    let sentry_project_mappings = parse_sentry_mappings();
     let listen_addr = env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8443".into());
 
     // Initialize queue
@@ -60,6 +67,9 @@ async fn main() -> Result<()> {
         api_key,
         gitlab_token,
         github_token,
+        sentry_webhook_secret,
+        sentry_organization,
+        sentry_project_mappings,
     };
 
     // Build router
@@ -120,4 +130,15 @@ async fn shutdown_signal(scheduler: Arc<Scheduler>) {
 
     info!("Shutdown signal received, stopping...");
     scheduler.stop().await;
+}
+
+/// Parse Sentry project mappings from SENTRY_PROJECT_MAPPINGS env var.
+fn parse_sentry_mappings() -> Vec<SentryProjectMapping> {
+    match env::var("SENTRY_PROJECT_MAPPINGS") {
+        Ok(json) => sentry::parse_project_mappings(&json).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to parse SENTRY_PROJECT_MAPPINGS");
+            Vec::new()
+        }),
+        Err(_) => Vec::new(),
+    }
 }

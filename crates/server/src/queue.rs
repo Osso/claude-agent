@@ -4,7 +4,7 @@ use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
 use tracing::{debug, error, info};
 
-use crate::gitlab::ReviewPayload;
+use crate::payload::JobPayload;
 
 const QUEUE_KEY: &str = "claude-agent:review-queue";
 const PROCESSING_KEY: &str = "claude-agent:processing";
@@ -14,16 +14,16 @@ const FAILED_KEY: &str = "claude-agent:failed";
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct QueueItem {
     pub id: String,
-    pub payload: ReviewPayload,
+    pub payload: JobPayload,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub attempts: u32,
 }
 
 impl QueueItem {
-    pub fn new(payload: ReviewPayload) -> Self {
+    pub fn new(payload: impl Into<JobPayload>) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
-            payload,
+            payload: payload.into(),
             created_at: chrono::Utc::now(),
             attempts: 0,
         }
@@ -43,16 +43,17 @@ impl Queue {
         Ok(Self { conn })
     }
 
-    /// Push a review payload to the queue.
-    pub async fn push(&self, payload: ReviewPayload) -> Result<String, redis::RedisError> {
+    /// Push a job payload to the queue.
+    pub async fn push(&self, payload: impl Into<JobPayload>) -> Result<String, redis::RedisError> {
         let item = QueueItem::new(payload);
         let id = item.id.clone();
+        let description = item.payload.description();
         let json = serde_json::to_string(&item).unwrap();
 
         let mut conn = self.conn.clone();
         conn.rpush::<_, _, ()>(QUEUE_KEY, &json).await?;
 
-        info!(id = %id, "Queued review job");
+        info!(id = %id, job = %description, "Queued job");
         Ok(id)
     }
 

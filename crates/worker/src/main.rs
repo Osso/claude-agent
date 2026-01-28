@@ -1,8 +1,8 @@
 //! Worker binary for ephemeral K8s jobs.
 //!
 //! This is the entry point for review jobs spawned by the scheduler.
-//! It receives review context via environment variable, clones the repo,
-//! and runs the Claude agent which posts its review via the gitlab CLI.
+//! It receives job context via environment variable, clones the repo,
+//! and runs the Claude agent which posts its review or fix.
 
 use std::env;
 use std::path::PathBuf;
@@ -13,48 +13,12 @@ use base64::Engine;
 use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
-use claude_agent_agents::MrReviewAgent;
+use claude_agent_agents::{MrReviewAgent, SentryFixContext, SentryFixerAgent};
 use claude_agent_core::ReviewContext;
+use claude_agent_server::sentry_api::{extract_tags, format_stacktrace, SentryClient};
+use claude_agent_server::{JobPayload, SentryFixPayload};
 
-/// Payload received from the scheduler.
-#[derive(Debug, serde::Deserialize)]
-struct ReviewPayload {
-    /// GitLab base URL (e.g., "https://gitlab.com")
-    #[allow(dead_code)]
-    gitlab_url: String,
-    /// Project path or ID
-    project: String,
-    /// Merge request IID
-    mr_iid: String,
-    /// Clone URL for the repository
-    clone_url: String,
-    /// Source branch to checkout
-    source_branch: String,
-    /// Target branch for comparison
-    target_branch: String,
-    /// MR title
-    title: String,
-    /// MR description
-    description: Option<String>,
-    /// Author username
-    author: String,
-    /// Webhook action: "open", "reopen", "update", etc.
-    #[serde(default = "default_action")]
-    action: String,
-    /// Platform: "gitlab" or "github"
-    #[serde(default = "default_platform")]
-    platform: String,
-}
-
-fn default_action() -> String {
-    "open".into()
-}
-
-fn default_platform() -> String {
-    "gitlab".into()
-}
-
-const VERSION: &str = "2026.01.28.5";
+const VERSION: &str = "2026.01.28.6";
 
 fn main() -> Result<()> {
     let subscriber = FmtSubscriber::builder()
@@ -67,6 +31,15 @@ fn main() -> Result<()> {
     info!(version = VERSION, "Claude Agent Worker starting");
 
     let payload = decode_payload()?;
+
+    match payload {
+        JobPayload::Review(review) => run_review_job(review),
+        JobPayload::SentryFix(sentry) => run_sentry_fix_job(sentry),
+    }
+}
+
+/// Run a review job (MR/PR review or lint-fix).
+fn run_review_job(payload: claude_agent_server::ReviewPayload) -> Result<()> {
     let is_github = payload.platform == "github";
 
     let token = if is_github {
@@ -161,7 +134,91 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn decode_payload() -> Result<ReviewPayload> {
+/// Run a Sentry fix job.
+fn run_sentry_fix_job(payload: SentryFixPayload) -> Result<()> {
+    info!(
+        short_id = %payload.short_id,
+        project = %payload.project_slug,
+        vcs_project = %payload.vcs_project,
+        "Processing Sentry fix"
+    );
+
+    // Fetch full issue details from Sentry API
+    let sentry_token = env::var("SENTRY_AUTH_TOKEN").context("SENTRY_AUTH_TOKEN not set")?;
+    let rt = tokio::runtime::Runtime::new()?;
+    let (stacktrace, tags, title, culprit, platform) = rt.block_on(async {
+        let client = SentryClient::new(&payload.organization, &sentry_token)?;
+
+        // Fetch latest event for stacktrace
+        let event = client.get_issue_latest_event(&payload.issue_id).await?;
+        let stacktrace = format_stacktrace(&event);
+        let tags = extract_tags(&event);
+
+        // Get issue details for title/culprit if not in payload
+        let issue = client.get_issue(&payload.issue_id).await?;
+        let title = issue["title"].as_str().unwrap_or(&payload.title).to_string();
+        let culprit = issue["culprit"]
+            .as_str()
+            .unwrap_or(&payload.culprit)
+            .to_string();
+        let platform = issue["platform"]
+            .as_str()
+            .unwrap_or(&payload.platform)
+            .to_string();
+
+        Ok::<_, anyhow::Error>((stacktrace, tags, title, culprit, platform))
+    })?;
+
+    info!(
+        stacktrace_len = stacktrace.len(),
+        tags_count = tags.len(),
+        "Fetched Sentry issue details"
+    );
+
+    // Clone repository
+    let work_dir = PathBuf::from("/work/repo");
+    std::fs::create_dir_all(&work_dir)?;
+
+    let token = if payload.vcs_platform == "github" {
+        env::var("GITHUB_TOKEN").context("GITHUB_TOKEN not set for GitHub repo")?
+    } else {
+        env::var("GITLAB_TOKEN").context("GITLAB_TOKEN not set for GitLab repo")?
+    };
+
+    let auth_clone_url = if payload.vcs_platform == "github" {
+        inject_github_credentials(&payload.clone_url, &token)
+    } else {
+        inject_git_credentials(&payload.clone_url, &token)
+    };
+
+    // Clone target branch (not a specific MR branch)
+    clone_branch(&auth_clone_url, &payload.target_branch, &work_dir)?;
+
+    // Build context and prompt
+    let context = SentryFixContext {
+        short_id: payload.short_id.clone(),
+        title,
+        culprit,
+        platform,
+        web_url: payload.web_url.clone(),
+        stacktrace,
+        tags,
+        vcs_project: payload.vcs_project.clone(),
+        target_branch: payload.target_branch.clone(),
+        vcs_platform: payload.vcs_platform.clone(),
+    };
+
+    let agent = SentryFixerAgent::new(context, &work_dir);
+    let prompt = agent.build_prompt();
+
+    info!(short_id = %payload.short_id, "Running Claude for Sentry fix");
+    run_claude(&work_dir, &prompt)?;
+
+    info!("Sentry fix completed");
+    Ok(())
+}
+
+fn decode_payload() -> Result<JobPayload> {
     let payload_b64 = env::var("REVIEW_PAYLOAD").context("REVIEW_PAYLOAD not set")?;
     let payload_bytes = base64::engine::general_purpose::STANDARD
         .decode(&payload_b64)
@@ -231,6 +288,23 @@ fn clone_repo(
 
     if !status.success() {
         bail!("git fetch failed with status {}", status);
+    }
+
+    Ok(())
+}
+
+/// Clone a repository at a specific branch (for Sentry fix jobs).
+fn clone_branch(clone_url: &str, branch: &str, target: &PathBuf) -> Result<()> {
+    info!(branch = %branch, "Cloning repository");
+
+    let status = Command::new("git")
+        .args(["clone", "--depth", "50", "--branch", branch, clone_url])
+        .arg(target)
+        .status()
+        .context("Failed to run git clone")?;
+
+    if !status.success() {
+        bail!("git clone failed with status {}", status);
     }
 
     Ok(())
@@ -399,7 +473,7 @@ fn get_changed_files(repo_dir: &PathBuf, target_branch: &str) -> Result<Vec<Stri
 
 /// Fetch unresolved discussion threads from GitLab API.
 fn fetch_unresolved_discussions(
-    payload: &ReviewPayload,
+    payload: &claude_agent_server::ReviewPayload,
     token: &str,
 ) -> Result<Vec<serde_json::Value>> {
     let encoded_project = urlencoding::encode(&payload.project);
@@ -486,7 +560,7 @@ fn format_discussions(discussions: &[serde_json::Value]) -> String {
 }
 
 /// Fetch review comments from GitHub API for update reviews.
-fn fetch_github_review_comments(payload: &ReviewPayload, token: &str) -> Result<String> {
+fn fetch_github_review_comments(payload: &claude_agent_server::ReviewPayload, token: &str) -> Result<String> {
     let repo = &payload.project;
     let number = &payload.mr_iid;
     let url = format!("https://api.github.com/repos/{repo}/pulls/{number}/comments?per_page=100");
