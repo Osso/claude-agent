@@ -153,9 +153,10 @@ fn clone_repo(clone_url: &str, branch: &str, target_branch: &str, target: &PathB
         bail!("git clone failed with status {}", status);
     }
 
-    // Fetch target branch for diff comparison
+    // Fetch target branch for diff comparison (explicit refspec to create origin/<branch> ref)
+    let refspec = format!("{target_branch}:refs/remotes/origin/{target_branch}");
     let status = Command::new("git")
-        .args(["fetch", "origin", target_branch])
+        .args(["fetch", "origin", &refspec])
         .current_dir(target)
         .status()
         .context("Failed to fetch target branch")?;
