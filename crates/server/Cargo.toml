@@ -30,5 +30,8 @@ kube = { workspace = true }
 k8s-openapi = { workspace = true }
 
 urlencoding = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 claude-agent-core = { workspace = true }

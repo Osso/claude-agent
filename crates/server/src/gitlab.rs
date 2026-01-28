@@ -164,6 +164,7 @@ pub async fn fetch_review_payload(
         description: mr.description,
         author: mr.author.username,
         action: "open".into(),
+        platform: "gitlab".into(),
     })
 }
 
@@ -226,10 +227,17 @@ pub struct ReviewPayload {
     /// Webhook action: "open", "reopen", "update", etc.
     #[serde(default = "default_action")]
     pub action: String,
+    /// Platform: "gitlab" or "github"
+    #[serde(default = "default_platform")]
+    pub platform: String,
 }
 
 fn default_action() -> String {
     "open".into()
+}
+
+fn default_platform() -> String {
+    "gitlab".into()
 }
 
 impl From<&MergeRequestEvent> for ReviewPayload {
@@ -257,6 +265,7 @@ impl From<&MergeRequestEvent> for ReviewPayload {
                 .action
                 .clone()
                 .unwrap_or_else(|| "open".into()),
+            platform: "gitlab".into(),
         }
     }
 }

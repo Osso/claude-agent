@@ -41,10 +41,17 @@ struct ReviewPayload {
     /// Webhook action: "open", "reopen", "update", etc.
     #[serde(default = "default_action")]
     action: String,
+    /// Platform: "gitlab" or "github"
+    #[serde(default = "default_platform")]
+    platform: String,
 }
 
 fn default_action() -> String {
     "open".into()
+}
+
+fn default_platform() -> String {
+    "gitlab".into()
 }
 
 fn main() -> Result<()> {
@@ -58,18 +65,30 @@ fn main() -> Result<()> {
     info!("Claude Agent Worker starting");
 
     let payload = decode_payload()?;
-    let gitlab_token = env::var("GITLAB_TOKEN").context("GITLAB_TOKEN not set")?;
+    let is_github = payload.platform == "github";
+
+    let token = if is_github {
+        env::var("GITHUB_TOKEN").context("GITHUB_TOKEN not set")?
+    } else {
+        env::var("GITLAB_TOKEN").context("GITLAB_TOKEN not set")?
+    };
 
     info!(
         project = %payload.project,
         mr_iid = %payload.mr_iid,
+        platform = %payload.platform,
         "Processing review"
     );
 
     let work_dir = PathBuf::from("/work/repo");
     std::fs::create_dir_all(&work_dir)?;
 
-    let auth_clone_url = inject_git_credentials(&payload.clone_url, &gitlab_token);
+    let auth_clone_url = if is_github {
+        inject_github_credentials(&payload.clone_url, &token)
+    } else {
+        inject_git_credentials(&payload.clone_url, &token)
+    };
+
     clone_repo(
         &auth_clone_url,
         &payload.source_branch,
@@ -94,8 +113,15 @@ fn main() -> Result<()> {
 
     let agent = MrReviewAgent::new(context, &work_dir);
 
-    let prompt = if payload.action == "update" {
-        let discussions = fetch_unresolved_discussions(&payload, &gitlab_token)?;
+    let prompt = if is_github {
+        if payload.action == "update" {
+            let discussions = fetch_github_review_comments(&payload, &token)?;
+            agent.build_github_update_prompt(&discussions)
+        } else {
+            agent.build_github_prompt()
+        }
+    } else if payload.action == "update" {
+        let discussions = fetch_unresolved_discussions(&payload, &token)?;
         info!(
             threads = discussions.len(),
             "Fetched unresolved discussion threads"
@@ -106,7 +132,7 @@ fn main() -> Result<()> {
         agent.build_prompt()
     };
 
-    info!(action = %payload.action, "Running Claude review");
+    info!(action = %payload.action, platform = %payload.platform, "Running Claude review");
     run_claude(&work_dir, &prompt)?;
 
     info!("Review completed");
@@ -138,7 +164,16 @@ fn run_claude(work_dir: &PathBuf, prompt: &str) -> Result<()> {
     Ok(())
 }
 
-/// Inject OAuth2 credentials into a git HTTPS URL.
+/// Inject GitHub access token into a git HTTPS URL.
+fn inject_github_credentials(url: &str, token: &str) -> String {
+    if let Some(rest) = url.strip_prefix("https://") {
+        format!("https://x-access-token:{token}@{rest}")
+    } else {
+        url.to_string()
+    }
+}
+
+/// Inject OAuth2 credentials into a git HTTPS URL (GitLab).
 fn inject_git_credentials(url: &str, token: &str) -> String {
     if let Some(rest) = url.strip_prefix("https://") {
         format!("https://oauth2:{token}@{rest}")
@@ -306,6 +341,52 @@ fn format_discussions(discussions: &[serde_json::Value]) -> String {
     out
 }
 
+/// Fetch review comments from GitHub API for update reviews.
+fn fetch_github_review_comments(payload: &ReviewPayload, token: &str) -> Result<String> {
+    let repo = &payload.project;
+    let number = &payload.mr_iid;
+    let url = format!("https://api.github.com/repos/{repo}/pulls/{number}/comments?per_page=100");
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("claude-agent-worker")
+        .build()?;
+
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .context("Failed to fetch GitHub review comments")?;
+
+    if !resp.status().is_success() {
+        bail!(
+            "GitHub API {} - {}",
+            resp.status(),
+            resp.text().unwrap_or_default()
+        );
+    }
+
+    let comments: Vec<serde_json::Value> = resp.json().context("Failed to parse comments")?;
+    let mut out = String::new();
+
+    for comment in &comments {
+        let id = comment["id"].as_u64().unwrap_or(0);
+        let path = comment["path"].as_str().unwrap_or("?");
+        let line = comment["line"]
+            .as_u64()
+            .or_else(|| comment["original_line"].as_u64())
+            .map(|l| l.to_string())
+            .unwrap_or_default();
+        let author = comment["user"]["login"].as_str().unwrap_or("?");
+        let body = comment["body"].as_str().unwrap_or("");
+
+        out.push_str(&format!("### Comment {id} ({path}:{line})\n\n"));
+        out.push_str(&format!("**@{author}**: {body}\n\n"));
+    }
+
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,6 +410,17 @@ mod tests {
         assert_eq!(
             result,
             "https://oauth2:glpat-xxx@gitlab.com/Globalcomix/gc.git"
+        );
+    }
+
+    #[test]
+    fn test_inject_github_credentials() {
+        let url = "https://github.com/owner/repo.git";
+        let token = "ghs_xxx";
+        let result = inject_github_credentials(url, token);
+        assert_eq!(
+            result,
+            "https://x-access-token:ghs_xxx@github.com/owner/repo.git"
         );
     }
 

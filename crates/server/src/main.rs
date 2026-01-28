@@ -11,6 +11,7 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+mod github;
 mod gitlab;
 mod queue;
 mod scheduler;
@@ -40,6 +41,7 @@ async fn main() -> Result<()> {
     let webhook_secret = env::var("WEBHOOK_SECRET").context("WEBHOOK_SECRET not set")?;
     let api_key = env::var("API_KEY").ok(); // Optional, defaults to webhook_secret
     let gitlab_token = env::var("GITLAB_TOKEN").context("GITLAB_TOKEN not set")?;
+    let github_token = env::var("GITHUB_TOKEN").ok();
     let listen_addr = env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8443".into());
 
     // Initialize queue
@@ -55,6 +57,7 @@ async fn main() -> Result<()> {
         webhook_secret,
         api_key,
         gitlab_token,
+        github_token,
     };
 
     // Build router

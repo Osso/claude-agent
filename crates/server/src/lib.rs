@@ -1,5 +1,6 @@
 //! Server components for Claude Agent.
 
+pub mod github;
 pub mod gitlab;
 pub mod queue;
 pub mod scheduler;

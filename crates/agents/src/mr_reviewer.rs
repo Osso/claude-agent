@@ -88,6 +88,84 @@ gitlab mr approve <MR_IID> -p <PROJECT>
 The GITLAB_TOKEN environment variable is already configured.
 "#;
 
+/// System prompt for GitHub PR reviews.
+pub const GITHUB_SYSTEM_PROMPT: &str = r#"You are an expert code reviewer. Review the pull request diff and provide constructive feedback.
+
+## Review Guidelines
+
+Focus on:
+1. **Bugs and Logic Errors**: Incorrect behavior, off-by-one errors, null pointer issues
+2. **Security Issues**: Injection vulnerabilities, auth bypasses, data exposure
+3. **Performance Problems**: N+1 queries, unnecessary allocations, inefficient algorithms
+4. **Code Quality**: Unclear logic, missing error handling, poor naming
+
+Do NOT focus on:
+- Minor style issues (let linters handle these)
+- Personal preferences
+- Hypothetical future problems
+
+## Posting Your Review
+
+Use the `github` CLI to post your review comment on the pull request:
+
+```bash
+github pr comment <REPO> <PR_NUMBER> -m "Your review comment in markdown"
+```
+
+The GITHUB_TOKEN environment variable is already configured.
+
+## Review Process
+
+1. Analyze the diff carefully
+2. If needed, read full files for context using the Read tool
+3. Post your review as a PR comment using `github pr comment`
+
+If the PR looks good and has no significant issues, approve it:
+
+```bash
+github pr approve <REPO> <PR_NUMBER>
+```
+
+Be constructive, specific, and reference file paths and line numbers when possible.
+"#;
+
+/// System prompt for GitHub update reviews (new pushes to existing PR).
+pub const GITHUB_UPDATE_SYSTEM_PROMPT: &str = r#"You are an expert code reviewer. The author has pushed new changes to a pull request that was previously reviewed.
+
+## Your Task
+
+You are given:
+1. The new diff (changes since last review)
+2. Previous review comments
+
+## Instructions
+
+- Review the new diff against previous review comments
+- If a comment's concern is addressed by the new changes, acknowledge the fix
+- If a comment's concern is NOT addressed, do not re-raise it (leave it for the author)
+- If the new changes introduce NEW issues, post a new comment
+- Do NOT re-review the entire PR — focus only on new changes and existing comments
+
+## Posting Comments
+
+Post new comments for new issues only:
+```bash
+github pr comment <REPO> <PR_NUMBER> -m "Your comment"
+```
+
+Reply to existing review comments:
+```bash
+github pr reply <REPO> <PR_NUMBER> --comment <COMMENT_ID> -m "Your reply"
+```
+
+If all issues are addressed and the new changes look good, approve the PR:
+```bash
+github pr approve <REPO> <PR_NUMBER>
+```
+
+The GITHUB_TOKEN environment variable is already configured.
+"#;
+
 /// MR Review Agent.
 pub struct MrReviewAgent {
     context: ReviewContext,
@@ -178,6 +256,80 @@ impl MrReviewAgent {
 
         prompt.push_str(
             "Review the unresolved threads and new diff. Reply to threads addressed by the new changes, and post new comments only for new issues.",
+        );
+
+        prompt
+    }
+
+    /// Build the initial prompt for GitHub PR review.
+    pub fn build_github_prompt(&self) -> String {
+        let mut prompt = String::new();
+
+        prompt.push_str(GITHUB_SYSTEM_PROMPT);
+        prompt.push_str("\n\n---\n\n");
+
+        prompt.push_str("## Pull Request Details\n\n");
+        prompt.push_str(&format!("**Repository**: {}\n", self.context.project));
+        prompt.push_str(&format!("**PR Number**: {}\n", self.context.mr_id));
+        prompt.push_str(&format!("**Title**: {}\n", self.context.title));
+        prompt.push_str(&format!(
+            "**Branch**: {} → {}\n",
+            self.context.source_branch, self.context.target_branch
+        ));
+        prompt.push_str(&format!("**Author**: {}\n", self.context.author));
+
+        if let Some(desc) = &self.context.description {
+            if !desc.is_empty() {
+                prompt.push_str(&format!("\n**Description**:\n{}\n", desc));
+            }
+        }
+
+        prompt.push_str("\n## Changed Files\n\n");
+        for file in &self.context.changed_files {
+            prompt.push_str(&format!("- `{}`\n", file));
+        }
+
+        prompt.push_str("\n## Diff\n\n```diff\n");
+        prompt.push_str(&self.context.diff);
+        prompt.push_str("\n```\n\n");
+
+        prompt.push_str(
+            "Review this pull request and post your feedback as a comment using `github pr comment`.",
+        );
+
+        prompt
+    }
+
+    /// Build prompt for GitHub update reviews (new push to existing PR).
+    pub fn build_github_update_prompt(&self, comments: &str) -> String {
+        let mut prompt = String::new();
+
+        prompt.push_str(GITHUB_UPDATE_SYSTEM_PROMPT);
+        prompt.push_str("\n\n---\n\n");
+
+        prompt.push_str("## Pull Request Details\n\n");
+        prompt.push_str(&format!("**Repository**: {}\n", self.context.project));
+        prompt.push_str(&format!("**PR Number**: {}\n", self.context.mr_id));
+        prompt.push_str(&format!("**Title**: {}\n", self.context.title));
+        prompt.push_str(&format!(
+            "**Branch**: {} → {}\n",
+            self.context.source_branch, self.context.target_branch
+        ));
+        prompt.push_str(&format!("**Author**: {}\n", self.context.author));
+
+        prompt.push_str("\n## Previous Review Comments\n\n");
+        if comments.is_empty() {
+            prompt.push_str("_No previous review comments._\n");
+        } else {
+            prompt.push_str(comments);
+        }
+
+        prompt.push_str("\n## New Changes (Diff)\n\n```diff\n");
+        prompt.push_str(&self.context.diff);
+        prompt.push_str("\n```\n\n");
+
+        prompt.push_str(
+            "Review the previous comments and new diff. Acknowledge addressed concerns and post new comments only for new issues.",
         );
 
         prompt
@@ -444,9 +596,8 @@ mod tests {
         assert!(!is_safe_command("wget http://evil.com"));
     }
 
-    #[test]
-    fn test_build_prompt() {
-        let context = ReviewContext {
+    fn make_context() -> ReviewContext {
+        ReviewContext {
             project: "test/repo".into(),
             mr_id: "123".into(),
             source_branch: "feature".into(),
@@ -456,14 +607,61 @@ mod tests {
             title: "Test MR".into(),
             description: Some("Test description".into()),
             author: "testuser".into(),
-        };
+        }
+    }
 
-        let agent = MrReviewAgent::new(context, "/tmp/repo");
+    #[test]
+    fn test_build_prompt() {
+        let agent = MrReviewAgent::new(make_context(), "/tmp/repo");
         let prompt = agent.build_prompt();
 
         assert!(prompt.contains("Test MR"));
         assert!(prompt.contains("feature → main"));
         assert!(prompt.contains("src/lib.rs"));
         assert!(prompt.contains("+ new line"));
+        assert!(prompt.contains("gitlab mr comment"));
+    }
+
+    #[test]
+    fn test_build_github_prompt() {
+        let agent = MrReviewAgent::new(make_context(), "/tmp/repo");
+        let prompt = agent.build_github_prompt();
+
+        assert!(prompt.contains("Test MR"));
+        assert!(prompt.contains("feature → main"));
+        assert!(prompt.contains("src/lib.rs"));
+        assert!(prompt.contains("+ new line"));
+        assert!(prompt.contains("github pr comment"));
+        assert!(!prompt.contains("gitlab mr comment"));
+    }
+
+    #[test]
+    fn test_build_github_update_prompt() {
+        let agent = MrReviewAgent::new(make_context(), "/tmp/repo");
+        let prompt = agent.build_github_update_prompt("### Comment 1\n\n**@reviewer**: Fix this\n");
+
+        assert!(prompt.contains("Test MR"));
+        assert!(prompt.contains("Previous Review Comments"));
+        assert!(prompt.contains("**@reviewer**: Fix this"));
+        assert!(prompt.contains("github pr reply"));
+        assert!(!prompt.contains("gitlab"));
+    }
+
+    #[test]
+    fn test_build_github_update_prompt_empty_comments() {
+        let agent = MrReviewAgent::new(make_context(), "/tmp/repo");
+        let prompt = agent.build_github_update_prompt("");
+
+        assert!(prompt.contains("No previous review comments"));
+    }
+
+    #[test]
+    fn test_build_update_prompt() {
+        let agent = MrReviewAgent::new(make_context(), "/tmp/repo");
+        let prompt = agent.build_update_prompt("### Thread abc (file.rs:10)\n\n**@rev**: Issue\n");
+
+        assert!(prompt.contains("Unresolved Discussion Threads"));
+        assert!(prompt.contains("**@rev**: Issue"));
+        assert!(prompt.contains("gitlab mr reply"));
     }
 }

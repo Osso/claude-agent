@@ -223,6 +223,18 @@ impl Scheduler {
                                     }),
                                     ..Default::default()
                                 },
+                                EnvVar {
+                                    name: "GITHUB_TOKEN".into(),
+                                    value_from: Some(EnvVarSource {
+                                        secret_key_ref: Some(SecretKeySelector {
+                                            name: "claude-agent-secrets".into(),
+                                            key: "github-token".into(),
+                                            optional: Some(true),
+                                        }),
+                                        ..Default::default()
+                                    }),
+                                    ..Default::default()
+                                },
                             ]),
                             volume_mounts: Some(vec![VolumeMount {
                                 name: "workdir".into(),

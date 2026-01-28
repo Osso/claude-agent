@@ -13,6 +13,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 
+use crate::github::{verify_signature, PullRequestEvent};
 use crate::gitlab::{fetch_review_payload, MergeRequestEvent, ReviewPayload};
 use crate::queue::Queue;
 
@@ -25,6 +26,8 @@ pub struct AppState {
     pub api_key: Option<String>,
     /// GitLab API token for fetching MR details
     pub gitlab_token: String,
+    /// GitHub API token (optional, for GitHub webhook support)
+    pub github_token: Option<String>,
 }
 
 impl AppState {
@@ -47,6 +50,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health_handler))
         .route("/webhook/gitlab", post(gitlab_webhook_handler))
+        .route("/webhook/github", post(github_webhook_handler))
         // API endpoints for CLI
         .route("/api/stats", get(queue_stats_handler))
         .route("/api/failed", get(list_failed_handler))
@@ -180,6 +184,89 @@ struct WebhookResponse {
     message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     job_id: Option<String>,
+}
+
+/// GitHub webhook handler.
+async fn github_webhook_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<impl IntoResponse, AppError> {
+    // Verify HMAC-SHA256 signature
+    let signature = headers
+        .get("X-Hub-Signature-256")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if !verify_signature(&state.webhook_secret, &body, signature) {
+        warn!("Invalid GitHub webhook signature");
+        return Err(AppError::Unauthorized);
+    }
+
+    // Only handle pull_request events
+    let event_type = headers
+        .get("X-GitHub-Event")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if event_type != "pull_request" {
+        return Ok((
+            StatusCode::OK,
+            Json(WebhookResponse {
+                status: "ignored".into(),
+                message: Some(format!("Unsupported event type: {event_type}")),
+                job_id: None,
+            }),
+        ));
+    }
+
+    // Log raw body for debugging
+    if let Ok(body_str) = std::str::from_utf8(&body) {
+        debug!(body = %body_str, "Raw GitHub webhook body");
+    }
+
+    // Parse event
+    let event: PullRequestEvent = serde_json::from_slice(&body).map_err(|e| {
+        if let Ok(body_str) = std::str::from_utf8(&body) {
+            error!(error = %e, body = %body_str, "Failed to parse GitHub webhook body");
+        } else {
+            error!(error = %e, "Failed to parse GitHub webhook body (non-UTF8)");
+        }
+        AppError::BadRequest(format!("Invalid JSON: {e}"))
+    })?;
+
+    info!(
+        repo = %event.repository.full_name,
+        pr = %event.pull_request.number,
+        action = %event.action,
+        "Received GitHub webhook"
+    );
+
+    if !event.should_review() {
+        debug!("GitHub event does not require review");
+        return Ok((
+            StatusCode::OK,
+            Json(WebhookResponse {
+                status: "ignored".into(),
+                message: Some("Event does not require review".into()),
+                job_id: None,
+            }),
+        ));
+    }
+
+    let payload = ReviewPayload::from(&event);
+    let job_id = state.queue.push(payload).await.map_err(AppError::Redis)?;
+
+    info!(job_id = %job_id, "Queued GitHub review job");
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(WebhookResponse {
+            status: "queued".into(),
+            message: None,
+            job_id: Some(job_id),
+        }),
+    ))
 }
 
 /// List failed items handler (requires API key).
