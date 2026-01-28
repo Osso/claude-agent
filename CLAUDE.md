@@ -148,8 +148,7 @@ curl -X POST http://localhost:8443/webhook/gitlab \
 
 ## Security Notes
 
-- Worker runs with `--dangerously-skip-permissions` (isolated in K8s Job)
-- NetworkPolicy restricts egress to GitLab/Anthropic APIs only
-- Commands in `mr_reviewer.rs` are allowlisted for safety
+- Worker runs with `--dangerously-skip-permissions` (isolated in K8s Job with no persistent storage)
+- NetworkPolicy restricts egress to external HTTPS only (no private network access)
 - Webhook signature verification required (`X-Gitlab-Token` header)
 - API endpoints protected by API key (`Authorization: Bearer <key>` or `X-API-Key` header)
