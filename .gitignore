@@ -2,3 +2,4 @@
 Cargo.lock
 *.log
 .env
+CLAUDE.local.md
