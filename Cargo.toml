@@ -61,5 +61,5 @@ claude-agent-server = { path = "crates/server" }
 claude-agent-agents = { path = "crates/agents" }
 
 [profile.release]
-lto = true
+lto = false
 strip = true
