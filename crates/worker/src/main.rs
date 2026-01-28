@@ -54,7 +54,7 @@ fn default_platform() -> String {
     "gitlab".into()
 }
 
-const VERSION: &str = "2026.01.28.4";
+const VERSION: &str = "2026.01.28.5";
 
 fn main() -> Result<()> {
     let subscriber = FmtSubscriber::builder()
