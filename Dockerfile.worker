@@ -1,4 +1,4 @@
-# Build stage
+# Build worker binary
 FROM rust:1.92-bookworm AS builder
 
 WORKDIR /build
@@ -22,6 +22,18 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
     cargo build --release --package claude-agent-worker && \
     cp target/release/claude-agent-worker /build/claude-agent-worker-bin
+
+# Build gitlab CLI from separate source
+FROM rust:1.92-bookworm AS gitlab-builder
+
+WORKDIR /build
+COPY --from=gitlab-cli . .
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo build --release && \
+    cp target/release/gitlab /build/gitlab-bin
 
 # Runtime stage with Claude Code
 FROM debian:bookworm-slim
@@ -48,6 +60,7 @@ RUN groupadd -g 1000 app && \
 WORKDIR /app
 
 COPY --from=builder /build/claude-agent-worker-bin /app/claude-agent-worker
+COPY --from=gitlab-builder /build/gitlab-bin /usr/local/bin/gitlab
 
 # Create work directory
 RUN mkdir -p /work && chown app:app /work

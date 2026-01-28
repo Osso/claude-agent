@@ -2,4 +2,4 @@
 
 pub mod mr_reviewer;
 
-pub use mr_reviewer::{GitLabClient, MrReviewAgent, SYSTEM_PROMPT, TOOL_DEFINITIONS};
+pub use mr_reviewer::{GitLabClient, MrReviewAgent, SYSTEM_PROMPT};

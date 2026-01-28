@@ -2,7 +2,7 @@
 //!
 //! This is the entry point for review jobs spawned by the scheduler.
 //! It receives review context via environment variable, clones the repo,
-//! runs the Claude agent, and posts the review.
+//! and runs the Claude agent which posts its review via the gitlab CLI.
 
 use std::env;
 use std::path::PathBuf;
@@ -10,16 +10,17 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use base64::Engine;
-use tracing::{error, info, Level};
+use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
-use claude_agent_agents::{GitLabClient, MrReviewAgent};
+use claude_agent_agents::MrReviewAgent;
 use claude_agent_core::ReviewContext;
 
 /// Payload received from the scheduler.
 #[derive(Debug, serde::Deserialize)]
 struct ReviewPayload {
     /// GitLab base URL (e.g., "https://gitlab.com")
+    #[allow(dead_code)]
     gitlab_url: String,
     /// Project path or ID
     project: String,
@@ -39,9 +40,7 @@ struct ReviewPayload {
     author: String,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Initialize logging
+fn main() -> Result<()> {
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .with_target(false)
@@ -51,13 +50,8 @@ async fn main() -> Result<()> {
 
     info!("Claude Agent Worker starting");
 
-    // Get payload from environment
-    let payload_b64 = env::var("REVIEW_PAYLOAD").context("REVIEW_PAYLOAD not set")?;
-    let payload_bytes = base64::engine::general_purpose::STANDARD
-        .decode(&payload_b64)
-        .context("Failed to decode base64 payload")?;
-    let payload: ReviewPayload =
-        serde_json::from_slice(&payload_bytes).context("Failed to parse payload JSON")?;
+    let payload = decode_payload()?;
+    let gitlab_token = env::var("GITLAB_TOKEN").context("GITLAB_TOKEN not set")?;
 
     info!(
         project = %payload.project,
@@ -65,22 +59,20 @@ async fn main() -> Result<()> {
         "Processing review"
     );
 
-    // Get tokens from environment
-    let gitlab_token = env::var("GITLAB_TOKEN").context("GITLAB_TOKEN not set")?;
-
-    // Setup work directory
     let work_dir = PathBuf::from("/work/repo");
     std::fs::create_dir_all(&work_dir)?;
 
-    // Clone repository (inject token into URL for authentication)
     let auth_clone_url = inject_git_credentials(&payload.clone_url, &gitlab_token);
-    clone_repo(&auth_clone_url, &payload.source_branch, &payload.target_branch, &work_dir)?;
+    clone_repo(
+        &auth_clone_url,
+        &payload.source_branch,
+        &payload.target_branch,
+        &work_dir,
+    )?;
 
-    // Get diff
     let diff = get_diff(&work_dir, &payload.target_branch)?;
     let changed_files = get_changed_files(&work_dir, &payload.target_branch)?;
 
-    // Build review context
     let context = ReviewContext {
         project: payload.project.clone(),
         mr_id: payload.mr_iid.clone(),
@@ -93,60 +85,42 @@ async fn main() -> Result<()> {
         author: payload.author.clone(),
     };
 
-    // Create GitLab client
-    let gitlab_client = GitLabClient::new(&payload.gitlab_url, &payload.project, &gitlab_token);
-
-    // Build review prompt
     let agent = MrReviewAgent::new(context, &work_dir);
     let prompt = agent.build_prompt();
 
-    // Run Claude in single-prompt mode
     info!("Running Claude review");
-    let output = run_claude(&work_dir, &prompt)?;
+    run_claude(&work_dir, &prompt)?;
 
-    if output.trim().is_empty() {
-        bail!("Claude returned empty output");
-    }
+    info!("Review completed");
+    Ok(())
+}
 
-    info!(output_len = output.len(), "Claude review completed");
+fn decode_payload() -> Result<ReviewPayload> {
+    let payload_b64 = env::var("REVIEW_PAYLOAD").context("REVIEW_PAYLOAD not set")?;
+    let payload_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&payload_b64)
+        .context("Failed to decode base64 payload")?;
+    serde_json::from_slice(&payload_bytes).context("Failed to parse payload JSON")
+}
 
-    // Post review as MR comment
-    match gitlab_client
-        .post_mr_note(&payload.mr_iid, &output)
-        .await
-    {
-        Ok(note_id) => {
-            info!(note_id = %note_id, "Posted review comment");
-        }
-        Err(e) => {
-            error!(error = %e, "Failed to post review comment");
-            bail!("Failed to post review comment: {e}");
-        }
+/// Run Claude Code with tools enabled. Claude will post the review itself.
+fn run_claude(work_dir: &PathBuf, prompt: &str) -> Result<()> {
+    let status = Command::new("claude")
+        .arg("-p")
+        .arg(prompt)
+        .arg("--dangerously-skip-permissions")
+        .current_dir(work_dir)
+        .status()
+        .context("Failed to run claude")?;
+
+    if !status.success() {
+        bail!("Claude exited with status {}", status);
     }
 
     Ok(())
 }
 
-/// Run Claude Code in single-prompt mode and return its text output.
-fn run_claude(work_dir: &PathBuf, prompt: &str) -> Result<String> {
-    let output = Command::new("claude")
-        .arg("--print")
-        .arg("--dangerously-skip-permissions")
-        .arg(prompt)
-        .current_dir(work_dir)
-        .output()
-        .context("Failed to run claude")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("Claude exited with status {}: {}", output.status, stderr);
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
 /// Inject OAuth2 credentials into a git HTTPS URL.
-/// Converts `https://gitlab.com/group/repo.git` to `https://oauth2:TOKEN@gitlab.com/group/repo.git`
 fn inject_git_credentials(url: &str, token: &str) -> String {
     if let Some(rest) = url.strip_prefix("https://") {
         format!("https://oauth2:{token}@{rest}")
@@ -155,8 +129,13 @@ fn inject_git_credentials(url: &str, token: &str) -> String {
     }
 }
 
-fn clone_repo(clone_url: &str, branch: &str, target_branch: &str, target: &PathBuf) -> Result<()> {
-    info!(url = %clone_url, branch = %branch, "Cloning repository");
+fn clone_repo(
+    clone_url: &str,
+    branch: &str,
+    target_branch: &str,
+    target: &PathBuf,
+) -> Result<()> {
+    info!(branch = %branch, "Cloning repository");
 
     let status = Command::new("git")
         .args(["clone", "--depth", "50", "--branch", branch, clone_url])
@@ -168,7 +147,6 @@ fn clone_repo(clone_url: &str, branch: &str, target_branch: &str, target: &PathB
         bail!("git clone failed with status {}", status);
     }
 
-    // Fetch target branch for diff comparison (explicit refspec to create origin/<branch> ref)
     let refspec = format!("{target_branch}:refs/remotes/origin/{target_branch}");
     let status = Command::new("git")
         .args(["fetch", "origin", &refspec])
@@ -231,7 +209,10 @@ mod tests {
         let url = "https://gitlab.com/group/repo.git";
         let token = "test-token";
         let result = inject_git_credentials(url, token);
-        assert_eq!(result, "https://oauth2:test-token@gitlab.com/group/repo.git");
+        assert_eq!(
+            result,
+            "https://oauth2:test-token@gitlab.com/group/repo.git"
+        );
     }
 
     #[test]
@@ -239,7 +220,10 @@ mod tests {
         let url = "https://gitlab.com/Globalcomix/gc.git";
         let token = "glpat-xxx";
         let result = inject_git_credentials(url, token);
-        assert_eq!(result, "https://oauth2:glpat-xxx@gitlab.com/Globalcomix/gc.git");
+        assert_eq!(
+            result,
+            "https://oauth2:glpat-xxx@gitlab.com/Globalcomix/gc.git"
+        );
     }
 
     #[test]
@@ -247,7 +231,6 @@ mod tests {
         let url = "git@gitlab.com:group/repo.git";
         let token = "test-token";
         let result = inject_git_credentials(url, token);
-        // SSH URLs should be returned unchanged
         assert_eq!(result, "git@gitlab.com:group/repo.git");
     }
 }

@@ -26,79 +26,23 @@ Do NOT focus on:
 - Personal preferences
 - Hypothetical future problems
 
-## Available Tools
+## Posting Your Review
 
-- `read_file(path)`: Read a file from the repository for more context
-- `run_command(cmd)`: Run a shell command (for linting, tests, etc.)
-- `post_comment(body)`: Post a review comment on the MR
-- `approve()`: Approve the MR if it looks good
-- `request_changes(reason)`: Request changes if there are issues
-- `finish(result)`: Complete the review with final decision
+Use the `gitlab` CLI to post your review comment on the merge request:
+
+```bash
+gitlab mr comment <MR_IID> -m "Your review comment in markdown" -p <PROJECT>
+```
+
+The GITLAB_TOKEN environment variable is already configured.
 
 ## Review Process
 
 1. Analyze the diff carefully
-2. If needed, read full files for context
-3. Optionally run linters or tests
-4. Post your review comment summarizing findings
-5. Either approve or request_changes
-6. Call finish with your final result
+2. If needed, read full files for context using the Read tool
+3. Post your review as an MR comment using `gitlab mr comment`
 
-## Output Format
-
-When calling `finish`, provide a result object with:
-- `decision`: "approved", "changes_requested", or "comment"
-- `summary`: Brief summary of your review
-- `issues`: Array of issues found (can be empty)
-  - `severity`: "error", "warning", or "info"
-  - `file`: Optional file path
-  - `line`: Optional line number
-  - `message`: Description of the issue
-
-Be constructive, specific, and reference line numbers when possible.
-"#;
-
-/// Tool definitions for Claude to use.
-pub const TOOL_DEFINITIONS: &str = r#"
-## Tools
-
-You have access to the following tools:
-
-### read_file
-Read a file from the repository.
-Parameters:
-- path (string, required): Path to the file relative to repo root
-
-### run_command
-Run a shell command in the repository.
-Parameters:
-- cmd (string, required): Command to run
-
-### post_comment
-Post a review comment on the merge request.
-Parameters:
-- body (string, required): Markdown content of the comment
-
-### approve
-Approve the merge request.
-No parameters.
-
-### request_changes
-Request changes on the merge request.
-Parameters:
-- reason (string, required): Brief explanation of why changes are needed
-
-### finish
-Complete the review.
-Parameters:
-- result (object, required):
-  - decision (string): "approved", "changes_requested", or "comment"
-  - summary (string): Brief summary of the review
-  - issues (array): List of issues found
-    - severity (string): "error", "warning", or "info"
-    - file (string, optional): File path
-    - line (number, optional): Line number
-    - message (string): Issue description
+Be constructive, specific, and reference file paths and line numbers when possible.
 "#;
 
 /// MR Review Agent.
@@ -127,11 +71,11 @@ impl MrReviewAgent {
         let mut prompt = String::new();
 
         prompt.push_str(SYSTEM_PROMPT);
-        prompt.push_str("\n\n");
-        prompt.push_str(TOOL_DEFINITIONS);
         prompt.push_str("\n\n---\n\n");
 
         prompt.push_str("## Merge Request Details\n\n");
+        prompt.push_str(&format!("**Project**: {}\n", self.context.project));
+        prompt.push_str(&format!("**MR IID**: {}\n", self.context.mr_id));
         prompt.push_str(&format!("**Title**: {}\n", self.context.title));
         prompt.push_str(&format!(
             "**Branch**: {} → {}\n",
@@ -154,7 +98,9 @@ impl MrReviewAgent {
         prompt.push_str(&self.context.diff);
         prompt.push_str("\n```\n\n");
 
-        prompt.push_str("Please review this merge request and provide your feedback.");
+        prompt.push_str(
+            "Review this merge request and post your feedback as a comment using `gitlab mr comment`.",
+        );
 
         prompt
     }

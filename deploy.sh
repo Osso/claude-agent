@@ -23,7 +23,9 @@ docker push "$REGISTRY/claude-agent-server:latest"
 # Build and push worker
 echo ""
 echo "=== Building worker ==="
+GITLAB_CLI_DIR="${GITLAB_CLI_DIR:-$HOME/Projects/cli/gitlab}"
 docker build -f Dockerfile.worker \
+    --build-context "gitlab-cli=$GITLAB_CLI_DIR" \
     -t "$REGISTRY/claude-agent-worker:$TAG" \
     -t "$REGISTRY/claude-agent-worker:latest" \
     .
