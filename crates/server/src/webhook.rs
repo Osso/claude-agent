@@ -32,6 +32,10 @@ pub struct AppState {
     pub github_token: Option<String>,
     /// Sentry webhook secret (optional, for Sentry webhook support)
     pub sentry_webhook_secret: Option<String>,
+    /// Sentry auth token for API calls
+    pub sentry_auth_token: Option<String>,
+    /// Claude OAuth token
+    pub claude_token: Option<String>,
     /// Sentry organization
     pub sentry_organization: Option<String>,
     /// Sentry project mappings
@@ -67,6 +71,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/review", post(queue_review_handler))
         .route("/api/review/github", post(queue_github_review_handler))
         .route("/api/sentry-fix", post(queue_sentry_fix_handler))
+        .route("/api/check-tokens", get(check_tokens_handler))
         // Legacy endpoint
         .route("/queue/stats", get(queue_stats_handler))
         .with_state(Arc::new(state))
@@ -729,6 +734,230 @@ async fn queue_sentry_fix_handler(
             "job_id": job_id,
         })),
     ))
+}
+
+/// Check tokens endpoint - validates configured tokens
+async fn check_tokens_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
+    if !state.verify_api_key(&headers) {
+        warn!("Invalid API key for /api/check-tokens");
+        return Err(AppError::Unauthorized);
+    }
+
+    let client = reqwest::Client::new();
+
+    // Check GitLab token
+    let gitlab = check_gitlab_token(&client, &state.gitlab_token).await;
+
+    // Check GitHub token
+    let github = match &state.github_token {
+        Some(token) => check_github_token(&client, token).await,
+        None => TokenStatus {
+            configured: false,
+            valid: false,
+            info: None,
+            error: None,
+        },
+    };
+
+    // Check Sentry token
+    let sentry = match &state.sentry_auth_token {
+        Some(token) => check_sentry_token(&client, token).await,
+        None => TokenStatus {
+            configured: false,
+            valid: false,
+            info: None,
+            error: None,
+        },
+    };
+
+    // Check Claude token
+    let claude = match &state.claude_token {
+        Some(token) => check_claude_token(&client, token).await,
+        None => TokenStatus {
+            configured: false,
+            valid: false,
+            info: None,
+            error: None,
+        },
+    };
+
+    Ok(Json(serde_json::json!({
+        "gitlab": gitlab,
+        "github": github,
+        "sentry": sentry,
+        "claude": claude,
+    })))
+}
+
+#[derive(Serialize)]
+struct TokenStatus {
+    configured: bool,
+    valid: bool,
+    info: Option<String>,
+    error: Option<String>,
+}
+
+async fn check_gitlab_token(client: &reqwest::Client, token: &str) -> TokenStatus {
+    let resp = client
+        .get("https://gitlab.com/api/v4/user")
+        .header("PRIVATE-TOKEN", token)
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            #[derive(Deserialize)]
+            struct User {
+                username: String,
+            }
+            match r.json::<User>().await {
+                Ok(u) => TokenStatus {
+                    configured: true,
+                    valid: true,
+                    info: Some(format!("@{}", u.username)),
+                    error: None,
+                },
+                Err(e) => TokenStatus {
+                    configured: true,
+                    valid: false,
+                    info: None,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
+        Ok(r) => TokenStatus {
+            configured: true,
+            valid: false,
+            info: None,
+            error: Some(format!("{}", r.status())),
+        },
+        Err(e) => TokenStatus {
+            configured: true,
+            valid: false,
+            info: None,
+            error: Some(e.to_string()),
+        },
+    }
+}
+
+async fn check_github_token(client: &reqwest::Client, token: &str) -> TokenStatus {
+    let resp = client
+        .get("https://api.github.com/user")
+        .header("Authorization", format!("Bearer {}", token))
+        .header("User-Agent", "claude-agent")
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            #[derive(Deserialize)]
+            struct User {
+                login: String,
+            }
+            match r.json::<User>().await {
+                Ok(u) => TokenStatus {
+                    configured: true,
+                    valid: true,
+                    info: Some(format!("@{}", u.login)),
+                    error: None,
+                },
+                Err(e) => TokenStatus {
+                    configured: true,
+                    valid: false,
+                    info: None,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
+        Ok(r) => TokenStatus {
+            configured: true,
+            valid: false,
+            info: None,
+            error: Some(format!("{}", r.status())),
+        },
+        Err(e) => TokenStatus {
+            configured: true,
+            valid: false,
+            info: None,
+            error: Some(e.to_string()),
+        },
+    }
+}
+
+async fn check_sentry_token(client: &reqwest::Client, token: &str) -> TokenStatus {
+    let resp = client
+        .get("https://sentry.io/api/0/organizations/")
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            #[derive(Deserialize)]
+            struct Org {
+                slug: String,
+            }
+            match r.json::<Vec<Org>>().await {
+                Ok(orgs) => {
+                    let slugs: Vec<_> = orgs.iter().map(|o| o.slug.as_str()).collect();
+                    TokenStatus {
+                        configured: true,
+                        valid: true,
+                        info: Some(format!("orgs: {}", slugs.join(", "))),
+                        error: None,
+                    }
+                }
+                Err(e) => TokenStatus {
+                    configured: true,
+                    valid: false,
+                    info: None,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
+        Ok(r) => TokenStatus {
+            configured: true,
+            valid: false,
+            info: None,
+            error: Some(format!("{}", r.status())),
+        },
+        Err(e) => TokenStatus {
+            configured: true,
+            valid: false,
+            info: None,
+            error: Some(e.to_string()),
+        },
+    }
+}
+
+async fn check_claude_token(_client: &reqwest::Client, token: &str) -> TokenStatus {
+    // OAuth tokens from `claude setup-token` are restricted to Claude Code only
+    // and cannot be validated via direct API calls. We verify the format instead.
+    if token.starts_with("sk-ant-oat01-") {
+        TokenStatus {
+            configured: true,
+            valid: true,
+            info: Some("OAuth token (format valid)".to_string()),
+            error: None,
+        }
+    } else if token.starts_with("sk-ant-api") {
+        TokenStatus {
+            configured: true,
+            valid: true,
+            info: Some("API key (format valid)".to_string()),
+            error: None,
+        }
+    } else {
+        TokenStatus {
+            configured: true,
+            valid: false,
+            info: None,
+            error: Some("unrecognized token format".to_string()),
+        }
+    }
 }
 
 /// Application error type.

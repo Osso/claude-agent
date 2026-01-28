@@ -49,6 +49,8 @@ async fn main() -> Result<()> {
     let gitlab_token = env::var("GITLAB_TOKEN").context("GITLAB_TOKEN not set")?;
     let github_token = env::var("GITHUB_TOKEN").ok();
     let sentry_webhook_secret = env::var("SENTRY_WEBHOOK_SECRET").ok();
+    let sentry_auth_token = env::var("SENTRY_AUTH_TOKEN").ok();
+    let claude_token = env::var("CLAUDE_CODE_OAUTH_TOKEN").ok();
     let sentry_organization = env::var("SENTRY_ORGANIZATION").ok();
     let sentry_project_mappings = parse_sentry_mappings();
     let listen_addr = env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8443".into());
@@ -68,6 +70,8 @@ async fn main() -> Result<()> {
         gitlab_token,
         github_token,
         sentry_webhook_secret,
+        sentry_auth_token,
+        claude_token,
         sentry_organization,
         sentry_project_mappings,
     };

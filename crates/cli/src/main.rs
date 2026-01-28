@@ -205,6 +205,9 @@ enum Commands {
         #[arg(long, short = 'n', default_value = "5")]
         limit: usize,
     },
+
+    /// Check if server's configured tokens are valid
+    CheckTokens,
 }
 
 #[tokio::main]
@@ -319,6 +322,10 @@ async fn main() -> Result<()> {
 
         Commands::Retry { id } => {
             api_retry(&server_url, &api_key, &id).await?;
+        }
+
+        Commands::CheckTokens => {
+            api_check_tokens(&server_url, &api_key).await?;
         }
     }
 
@@ -877,4 +884,93 @@ async fn api_queue_sentry_fix(
         .context("Failed to parse queue response")?;
 
     Ok(result.job_id)
+}
+
+/// Check server's configured tokens via API.
+async fn api_check_tokens(server_url: &str, api_key: &str) -> Result<()> {
+    let client = create_api_client(api_key)?;
+    let url = format!("{}/api/check-tokens", server_url.trim_end_matches('/'));
+
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .context("Failed to check tokens")?;
+
+    if !resp.status().is_success() {
+        bail!("API error: {} - {}", resp.status(), resp.text().await?);
+    }
+
+    #[derive(Deserialize)]
+    struct TokenStatus {
+        configured: bool,
+        valid: bool,
+        info: Option<String>,
+        error: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct CheckTokensResponse {
+        gitlab: TokenStatus,
+        github: TokenStatus,
+        sentry: TokenStatus,
+        claude: TokenStatus,
+    }
+
+    let result: CheckTokensResponse = resp
+        .json()
+        .await
+        .context("Failed to parse check-tokens response")?;
+
+    let mut all_valid = true;
+
+    // Print GitLab status
+    print!("GitLab:  ");
+    if !result.gitlab.configured {
+        println!("- not configured");
+    } else if result.gitlab.valid {
+        println!("✓ valid ({})", result.gitlab.info.as_deref().unwrap_or(""));
+    } else {
+        println!("✗ invalid - {}", result.gitlab.error.as_deref().unwrap_or("unknown"));
+        all_valid = false;
+    }
+
+    // Print GitHub status
+    print!("GitHub:  ");
+    if !result.github.configured {
+        println!("- not configured");
+    } else if result.github.valid {
+        println!("✓ valid ({})", result.github.info.as_deref().unwrap_or(""));
+    } else {
+        println!("✗ invalid - {}", result.github.error.as_deref().unwrap_or("unknown"));
+        all_valid = false;
+    }
+
+    // Print Sentry status
+    print!("Sentry:  ");
+    if !result.sentry.configured {
+        println!("- not configured");
+    } else if result.sentry.valid {
+        println!("✓ valid ({})", result.sentry.info.as_deref().unwrap_or(""));
+    } else {
+        println!("✗ invalid - {}", result.sentry.error.as_deref().unwrap_or("unknown"));
+        all_valid = false;
+    }
+
+    // Print Claude status
+    print!("Claude:  ");
+    if !result.claude.configured {
+        println!("- not configured");
+    } else if result.claude.valid {
+        println!("✓ valid ({})", result.claude.info.as_deref().unwrap_or(""));
+    } else {
+        println!("✗ invalid - {}", result.claude.error.as_deref().unwrap_or("unknown"));
+        all_valid = false;
+    }
+
+    if !all_valid {
+        bail!("One or more tokens are invalid");
+    }
+
+    Ok(())
 }
