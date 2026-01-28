@@ -153,10 +153,11 @@ impl Scheduler {
 
     /// Spawn a K8s Job for the review.
     async fn spawn_job(&self, item: &QueueItem) -> Result<String, kube::Error> {
+        // Job names must be lowercase RFC 1123 subdomains
         let job_name = format!(
             "{}-{}-{}",
             item.payload.job_prefix(),
-            item.payload.issue_id(),
+            item.payload.issue_id().to_lowercase(),
             &item.id[..8]
         );
 
