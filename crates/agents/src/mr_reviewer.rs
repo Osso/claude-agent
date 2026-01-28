@@ -327,10 +327,13 @@ impl GitLabClient {
         project_id: impl Into<String>,
         token: impl Into<String>,
     ) -> Self {
+        let project_id: String = project_id.into();
+        // URL-encode the project path (e.g., "Globalcomix/gc" → "Globalcomix%2Fgc")
+        let encoded_project = project_id.replace('/', "%2F");
         Self {
             client: reqwest::Client::new(),
             base_url: base_url.into(),
-            project_id: project_id.into(),
+            project_id: encoded_project,
             token: token.into(),
         }
     }
