@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 
 use crate::github::{verify_signature, PullRequestEvent};
-use crate::gitlab::{fetch_review_payload, MergeRequestEvent, ReviewPayload};
+use crate::gitlab::{fetch_review_payload, MergeRequestEvent, PipelineEvent, ReviewPayload};
 use crate::queue::Queue;
 
 /// Application state shared across handlers.
@@ -95,7 +95,13 @@ async fn queue_stats_handler(
     })))
 }
 
-/// GitLab webhook handler.
+/// Minimal struct to peek at the event type before full parsing.
+#[derive(Deserialize)]
+struct EventKind {
+    object_kind: String,
+}
+
+/// GitLab webhook handler. Dispatches based on object_kind.
 async fn gitlab_webhook_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -117,13 +123,35 @@ async fn gitlab_webhook_handler(
         debug!(body = %body_str, "Raw webhook body");
     }
 
-    // Parse event
-    let event: MergeRequestEvent = serde_json::from_slice(&body).map_err(|e| {
-        // Log raw body on parse error for debugging
-        if let Ok(body_str) = std::str::from_utf8(&body) {
-            error!(error = %e, body = %body_str, "Failed to parse webhook body");
-        } else {
-            error!(error = %e, "Failed to parse webhook body (non-UTF8)");
+    // Peek at object_kind to dispatch
+    let kind: EventKind = serde_json::from_slice(&body).map_err(|e| {
+        AppError::BadRequest(format!("Invalid JSON: {e}"))
+    })?;
+
+    match kind.object_kind.as_str() {
+        "merge_request" => handle_merge_request_event(&state, &body).await,
+        "pipeline" => handle_pipeline_event(&state, &body).await,
+        other => {
+            debug!(object_kind = other, "Ignoring unsupported GitLab event type");
+            Ok((
+                StatusCode::OK,
+                Json(WebhookResponse {
+                    status: "ignored".into(),
+                    message: Some(format!("Unsupported event type: {other}")),
+                    job_id: None,
+                }),
+            ))
+        }
+    }
+}
+
+async fn handle_merge_request_event(
+    state: &AppState,
+    body: &[u8],
+) -> Result<(StatusCode, Json<WebhookResponse>), AppError> {
+    let event: MergeRequestEvent = serde_json::from_slice(body).map_err(|e| {
+        if let Ok(body_str) = std::str::from_utf8(body) {
+            error!(error = %e, body = %body_str, "Failed to parse merge request webhook");
         }
         AppError::BadRequest(format!("Invalid JSON: {e}"))
     })?;
@@ -132,10 +160,9 @@ async fn gitlab_webhook_handler(
         project = %event.project.path_with_namespace,
         mr_iid = %event.object_attributes.iid,
         action = ?event.object_attributes.action,
-        "Received GitLab webhook"
+        "Received GitLab merge request webhook"
     );
 
-    // Check if we should review
     if !event.should_review() {
         debug!("Event does not require review");
         return Ok((
@@ -148,7 +175,6 @@ async fn gitlab_webhook_handler(
         ));
     }
 
-    // Check for skip label
     if event.has_label("skip-review") {
         debug!("MR has skip-review label");
         return Ok((
@@ -161,7 +187,6 @@ async fn gitlab_webhook_handler(
         ));
     }
 
-    // Queue for processing
     let payload = ReviewPayload::from(&event);
     let job_id = state.queue.push(payload).await.map_err(AppError::Redis)?;
 
@@ -172,6 +197,50 @@ async fn gitlab_webhook_handler(
         Json(WebhookResponse {
             status: "queued".into(),
             message: None,
+            job_id: Some(job_id),
+        }),
+    ))
+}
+
+async fn handle_pipeline_event(
+    state: &AppState,
+    body: &[u8],
+) -> Result<(StatusCode, Json<WebhookResponse>), AppError> {
+    let event: PipelineEvent = serde_json::from_slice(body).map_err(|e| {
+        if let Ok(body_str) = std::str::from_utf8(body) {
+            error!(error = %e, body = %body_str, "Failed to parse pipeline webhook");
+        }
+        AppError::BadRequest(format!("Invalid JSON: {e}"))
+    })?;
+
+    info!(
+        project = %event.project.path_with_namespace,
+        pipeline_id = %event.object_attributes.id,
+        status = %event.object_attributes.status,
+        "Received GitLab pipeline webhook"
+    );
+
+    if !event.should_lint_fix() {
+        return Ok((
+            StatusCode::OK,
+            Json(WebhookResponse {
+                status: "ignored".into(),
+                message: Some("Pipeline event does not require lint fix".into()),
+                job_id: None,
+            }),
+        ));
+    }
+
+    let payload = ReviewPayload::from(&event);
+    let job_id = state.queue.push(payload).await.map_err(AppError::Redis)?;
+
+    info!(job_id = %job_id, "Queued lint-fix job");
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(WebhookResponse {
+            status: "queued".into(),
+            message: Some("Lint-fix job queued".into()),
             job_id: Some(job_id),
         }),
     ))

@@ -28,27 +28,40 @@ Do NOT focus on:
 
 ## Posting Your Review
 
-Use the `gitlab` CLI to post your review comment on the merge request:
+The GITLAB_TOKEN environment variable is already configured.
+
+**For file-specific issues**, use inline comments on the exact line:
+
+```bash
+gitlab mr comment-inline <MR_IID> -p <PROJECT> --file <path> --line <N> \
+  --base-sha <BASE_SHA> --head-sha <HEAD_SHA> --start-sha <START_SHA> \
+  -m "Description of the issue"
+```
+
+Use `--old-line` instead of `--line` for comments on deleted lines.
+Use `--old-file` if the file was renamed.
+
+**For general observations** (architecture, missing tests, summary):
 
 ```bash
 gitlab mr comment <MR_IID> -m "Your review comment in markdown" -p <PROJECT>
 ```
 
-The GITLAB_TOKEN environment variable is already configured.
+**When to use inline vs general:**
+- Inline: specific bugs, logic errors, security issues, performance problems at a particular line
+- General: overall architecture concerns, missing tests, review summary
 
 ## Review Process
 
 1. Analyze the diff carefully
 2. If needed, read full files for context using the Read tool
-3. Post your review as an MR comment using `gitlab mr comment`
+3. Post inline comments for specific issues, and a general comment for overall observations
 
 If the MR looks good and has no significant issues, approve it:
 
 ```bash
 gitlab mr approve <MR_IID> -p <PROJECT>
 ```
-
-Be constructive, specific, and reference file paths and line numbers when possible.
 "#;
 
 /// System prompt for update reviews (new pushes to existing MR).
@@ -106,27 +119,40 @@ Do NOT focus on:
 
 ## Posting Your Review
 
-Use the `github` CLI to post your review comment on the pull request:
+The GITHUB_TOKEN environment variable is already configured.
+
+**For file-specific issues**, submit a review with inline comments:
+
+```bash
+github pr review <REPO> <PR_NUMBER> --event COMMENT \
+  --comment "path/to/file.rs:42:Description of the issue" \
+  --comment "other/file.rs:15:Another issue" \
+  -b "Summary of review findings"
+```
+
+Each `--comment` follows the format `path:line:body`.
+
+**For general observations** (architecture, missing tests, summary):
 
 ```bash
 github pr comment <REPO> <PR_NUMBER> -m "Your review comment in markdown"
 ```
 
-The GITHUB_TOKEN environment variable is already configured.
+**When to use inline vs general:**
+- Inline: specific bugs, logic errors, security issues, performance problems at a particular line
+- General: overall architecture concerns, missing tests, review summary
 
 ## Review Process
 
 1. Analyze the diff carefully
 2. If needed, read full files for context using the Read tool
-3. Post your review as a PR comment using `github pr comment`
+3. Post inline comments for specific issues, and a general comment for overall observations
 
 If the PR looks good and has no significant issues, approve it:
 
 ```bash
 github pr approve <REPO> <PR_NUMBER>
 ```
-
-Be constructive, specific, and reference file paths and line numbers when possible.
 "#;
 
 /// System prompt for GitHub update reviews (new pushes to existing PR).
@@ -164,6 +190,36 @@ github pr approve <REPO> <PR_NUMBER>
 ```
 
 The GITHUB_TOKEN environment variable is already configured.
+"#;
+
+/// System prompt for lint-fix jobs (triggered by CI pipeline failure).
+pub const LINT_FIX_SYSTEM_PROMPT: &str = r#"You are a code fixer. A CI pipeline has failed with linter errors on a merge request. Your job is to fix the errors.
+
+## Instructions
+
+1. Read the linter output below carefully
+2. For each error, read the relevant source file to understand context
+3. Fix the error by editing the file
+4. After all fixes are applied, commit and push:
+
+```bash
+git add -A
+git commit -m "fix: resolve linter errors"
+git push origin HEAD
+```
+
+## Rules
+
+- Only fix errors reported by the linters. Do NOT refactor, improve, or change any other code.
+- If an error is ambiguous or requires design decisions, skip it and note it in the commit message.
+- Do not add new dependencies or change configuration files.
+- If no errors can be fixed, do nothing and explain why.
+
+## Available Tools
+
+- Read files with the Read tool
+- Edit files with the Edit tool
+- Run commands: `git add`, `git commit`, `git push`, linters, `cat`, `head`, `tail`, `grep`, `rg`, `ls`, `find`
 "#;
 
 /// MR Review Agent.
@@ -210,6 +266,17 @@ impl MrReviewAgent {
             }
         }
 
+        if let (Some(base), Some(head), Some(start)) = (
+            &self.context.base_sha,
+            &self.context.head_sha,
+            &self.context.start_sha,
+        ) {
+            prompt.push_str(&format!("\n**Diff SHAs** (for inline comments):\n"));
+            prompt.push_str(&format!("- BASE_SHA: `{}`\n", base));
+            prompt.push_str(&format!("- HEAD_SHA: `{}`\n", head));
+            prompt.push_str(&format!("- START_SHA: `{}`\n", start));
+        }
+
         prompt.push_str("\n## Changed Files\n\n");
         for file in &self.context.changed_files {
             prompt.push_str(&format!("- `{}`\n", file));
@@ -220,7 +287,7 @@ impl MrReviewAgent {
         prompt.push_str("\n```\n\n");
 
         prompt.push_str(
-            "Review this merge request and post your feedback as a comment using `gitlab mr comment`.",
+            "Review this merge request. Post inline comments for specific issues and a general comment for overall observations.",
         );
 
         prompt
@@ -294,7 +361,7 @@ impl MrReviewAgent {
         prompt.push_str("\n```\n\n");
 
         prompt.push_str(
-            "Review this pull request and post your feedback as a comment using `github pr comment`.",
+            "Review this pull request. Post inline comments for specific issues using `github pr review`, and a general comment for overall observations.",
         );
 
         prompt
@@ -330,6 +397,38 @@ impl MrReviewAgent {
 
         prompt.push_str(
             "Review the previous comments and new diff. Acknowledge addressed concerns and post new comments only for new issues.",
+        );
+
+        prompt
+    }
+
+    /// Build prompt for lint-fix jobs (CI pipeline failure).
+    pub fn build_lint_fix_prompt(&self, linter_output: &str) -> String {
+        let mut prompt = String::new();
+
+        prompt.push_str(LINT_FIX_SYSTEM_PROMPT);
+        prompt.push_str("\n\n---\n\n");
+
+        prompt.push_str("## Merge Request Details\n\n");
+        prompt.push_str(&format!("**Project**: {}\n", self.context.project));
+        prompt.push_str(&format!("**MR IID**: {}\n", self.context.mr_id));
+        prompt.push_str(&format!("**Title**: {}\n", self.context.title));
+        prompt.push_str(&format!(
+            "**Branch**: {} → {}\n",
+            self.context.source_branch, self.context.target_branch
+        ));
+
+        prompt.push_str("\n## Changed Files\n\n");
+        for file in &self.context.changed_files {
+            prompt.push_str(&format!("- `{}`\n", file));
+        }
+
+        prompt.push_str("\n## Linter Output\n\n```\n");
+        prompt.push_str(linter_output);
+        prompt.push_str("\n```\n\n");
+
+        prompt.push_str(
+            "Fix the linter errors above. Only modify files that have errors. Commit and push when done.",
         );
 
         prompt
@@ -482,8 +581,13 @@ fn is_safe_command(cmd: &str) -> bool {
         "jq ",
         "github pr ",
         "gitlab mr ",
+        "gitlab ci ",
         "sentry ",
         "jira ",
+        // Git write commands (for lint-fix jobs)
+        "git add ",
+        "git commit ",
+        "git push ",
     ];
 
     let cmd_lower = cmd.to_lowercase();
@@ -615,6 +719,9 @@ mod tests {
             title: "Test MR".into(),
             description: Some("Test description".into()),
             author: "testuser".into(),
+            base_sha: Some("abc123".into()),
+            head_sha: Some("def456".into()),
+            start_sha: Some("abc123".into()),
         }
     }
 

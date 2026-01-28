@@ -85,6 +85,76 @@ pub struct Repository {
     pub homepage: Option<String>,
 }
 
+/// GitLab Pipeline webhook event.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PipelineEvent {
+    pub object_kind: String,
+    pub object_attributes: PipelineAttributes,
+    pub merge_request: Option<PipelineMergeRequest>,
+    pub project: Project,
+    pub user: User,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PipelineAttributes {
+    pub id: i64,
+    pub status: String,
+    #[serde(rename = "ref")]
+    pub ref_name: String,
+    #[serde(default)]
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PipelineMergeRequest {
+    pub iid: i64,
+    pub title: String,
+    pub source_branch: String,
+    pub target_branch: String,
+    pub url: String,
+}
+
+impl PipelineEvent {
+    /// Check if this pipeline event should trigger a lint-fix job.
+    pub fn should_lint_fix(&self) -> bool {
+        self.object_kind == "pipeline"
+            && self.object_attributes.status == "failed"
+            && self.merge_request.is_some()
+    }
+}
+
+impl From<&PipelineEvent> for ReviewPayload {
+    fn from(event: &PipelineEvent) -> Self {
+        let gitlab_url = event
+            .project
+            .web_url
+            .split('/')
+            .take(3)
+            .collect::<Vec<_>>()
+            .join("/");
+
+        let mr = event.merge_request.as_ref().unwrap();
+
+        Self {
+            gitlab_url,
+            project: event.project.path_with_namespace.clone(),
+            mr_iid: mr.iid.to_string(),
+            clone_url: event
+                .project
+                .git_http_url
+                .clone()
+                .unwrap_or_default(),
+            source_branch: mr.source_branch.clone(),
+            target_branch: mr.target_branch.clone(),
+            title: mr.title.clone(),
+            description: None,
+            author: event.user.username.clone(),
+            action: "lint_fix".into(),
+            platform: "gitlab".into(),
+        }
+    }
+}
+
 /// Build auth headers for GitLab API requests.
 /// Supports both PAT (PRIVATE-TOKEN) and OAuth (Bearer) tokens.
 pub fn gitlab_auth_headers(token: &str) -> Result<HeaderMap, anyhow::Error> {

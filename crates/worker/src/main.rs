@@ -10,7 +10,7 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use base64::Engine;
-use tracing::{info, Level};
+use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use claude_agent_agents::MrReviewAgent;
@@ -99,6 +99,14 @@ fn main() -> Result<()> {
     let diff = get_diff(&work_dir, &payload.target_branch)?;
     let changed_files = get_changed_files(&work_dir, &payload.target_branch)?;
 
+    let (base_sha, head_sha, start_sha) = match get_diff_shas(&work_dir, &payload.target_branch) {
+        Ok(shas) => (Some(shas.0), Some(shas.1), Some(shas.2)),
+        Err(e) => {
+            warn!(error = %e, "Failed to compute diff SHAs, inline comments will not work");
+            (None, None, None)
+        }
+    };
+
     let context = ReviewContext {
         project: payload.project.clone(),
         mr_id: payload.mr_iid.clone(),
@@ -109,11 +117,23 @@ fn main() -> Result<()> {
         title: payload.title.clone(),
         description: payload.description.clone(),
         author: payload.author.clone(),
+        base_sha,
+        head_sha,
+        start_sha,
     };
 
+    let changed_files_ref = context.changed_files.clone();
     let agent = MrReviewAgent::new(context, &work_dir);
 
-    let prompt = if is_github {
+    let prompt = if payload.action == "lint_fix" {
+        let linter_output = run_linters(&work_dir, &changed_files_ref)?;
+        if linter_output.trim().is_empty() {
+            info!("Linters produced no output, skipping lint-fix");
+            return Ok(());
+        }
+        info!(output_len = linter_output.len(), "Collected linter output");
+        agent.build_lint_fix_prompt(&linter_output)
+    } else if is_github {
         if payload.action == "update" {
             let discussions = fetch_github_review_comments(&payload, &token)?;
             agent.build_github_update_prompt(&discussions)
@@ -132,7 +152,7 @@ fn main() -> Result<()> {
         agent.build_prompt()
     };
 
-    info!(action = %payload.action, platform = %payload.platform, "Running Claude review");
+    info!(action = %payload.action, platform = %payload.platform, "Running Claude");
     run_claude(&work_dir, &prompt)?;
 
     info!("Review completed");
@@ -212,6 +232,128 @@ fn clone_repo(
     }
 
     Ok(())
+}
+
+fn run_git(repo_dir: &PathBuf, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo_dir)
+        .output()
+        .with_context(|| format!("Failed to run git {}", args.first().unwrap_or(&"")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git {} failed: {}", args.first().unwrap_or(&""), stderr);
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn get_diff_shas(repo_dir: &PathBuf, target_branch: &str) -> Result<(String, String, String)> {
+    let start_sha = run_git(
+        repo_dir,
+        &["merge-base", &format!("origin/{target_branch}"), "HEAD"],
+    )?;
+    let head_sha = run_git(repo_dir, &["rev-parse", "HEAD"])?;
+    // base_sha == start_sha for standard MRs
+    Ok((start_sha.clone(), head_sha, start_sha))
+}
+
+/// Detect file types from changed files and run relevant linters.
+fn run_linters(repo_dir: &PathBuf, changed_files: &[String]) -> Result<String> {
+    let mut output = String::new();
+
+    let has_ext = |ext: &str| changed_files.iter().any(|f| f.ends_with(ext));
+
+    // PHP: phpstan + mago
+    if has_ext(".php") {
+        if let Ok(result) = run_linter(repo_dir, "phpstan", &["analyse", "--no-progress", "--error-format=raw"]) {
+            if !result.is_empty() {
+                output.push_str("### phpstan\n");
+                output.push_str(&result);
+                output.push('\n');
+            }
+        }
+        if let Ok(result) = run_linter(repo_dir, "mago", &["lint"]) {
+            if !result.is_empty() {
+                output.push_str("### mago\n");
+                output.push_str(&result);
+                output.push('\n');
+            }
+        }
+    }
+
+    // Rust: cargo clippy
+    if has_ext(".rs") {
+        if let Ok(result) = run_linter(repo_dir, "cargo", &["clippy", "--workspace", "--message-format=short", "--", "-D", "warnings"]) {
+            if !result.is_empty() {
+                output.push_str("### cargo clippy\n");
+                output.push_str(&result);
+                output.push('\n');
+            }
+        }
+    }
+
+    // JavaScript/TypeScript: eslint
+    if has_ext(".js") || has_ext(".ts") || has_ext(".jsx") || has_ext(".tsx") {
+        if let Ok(result) = run_linter(repo_dir, "eslint", &["."]) {
+            if !result.is_empty() {
+                output.push_str("### eslint\n");
+                output.push_str(&result);
+                output.push('\n');
+            }
+        }
+    }
+
+    // Python: ruff
+    if has_ext(".py") {
+        if let Ok(result) = run_linter(repo_dir, "ruff", &["check", "."]) {
+            if !result.is_empty() {
+                output.push_str("### ruff\n");
+                output.push_str(&result);
+                output.push('\n');
+            }
+        }
+    }
+
+    // Go: golangci-lint
+    if has_ext(".go") {
+        if let Ok(result) = run_linter(repo_dir, "golangci-lint", &["run"]) {
+            if !result.is_empty() {
+                output.push_str("### golangci-lint\n");
+                output.push_str(&result);
+                output.push('\n');
+            }
+        }
+    }
+
+    Ok(output)
+}
+
+/// Run a linter command and return its combined stdout+stderr output.
+/// Returns Ok("") if the linter is not found (not installed).
+fn run_linter(repo_dir: &PathBuf, cmd: &str, args: &[&str]) -> Result<String> {
+    let output = match Command::new(cmd)
+        .args(args)
+        .current_dir(repo_dir)
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            info!(cmd = cmd, "Linter not found, skipping");
+            return Ok(String::new());
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let mut result = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.is_empty() {
+        result.push_str(&stderr);
+    }
+
+    // Linters exit non-zero when they find issues — that's expected
+    Ok(result)
 }
 
 fn get_diff(repo_dir: &PathBuf, target_branch: &str) -> Result<String> {

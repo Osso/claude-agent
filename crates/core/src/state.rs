@@ -48,6 +48,15 @@ pub struct ReviewContext {
     pub description: Option<String>,
     /// Author username.
     pub author: String,
+    /// Base commit SHA (for inline comments).
+    #[serde(default)]
+    pub base_sha: Option<String>,
+    /// Head commit SHA (for inline comments).
+    #[serde(default)]
+    pub head_sha: Option<String>,
+    /// Start/merge-base commit SHA (for inline comments).
+    #[serde(default)]
+    pub start_sha: Option<String>,
 }
 
 /// Metrics for agent execution.
