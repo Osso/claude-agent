@@ -83,7 +83,7 @@ GitLab/GitHub/Sentry Webhook → Server → Redis Queue → Scheduler → K8s Jo
 | `SENTRY_PROJECT_MAPPINGS` | JSON array mapping Sentry projects to repos | Server (optional) |
 | `GITLAB_TOKEN` | GitLab API token | Worker |
 | `GITHUB_TOKEN` | GitHub API token | Worker (optional) |
-| `ANTHROPIC_API_KEY` | Anthropic API key | Worker |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Claude OAuth token (from `claude setup-token`) | Worker |
 | `SENTRY_AUTH_TOKEN` | Sentry API token (for fetching events) | Worker (optional) |
 | `REVIEW_PAYLOAD` | Base64-encoded job payload | Worker (set by scheduler) |
 

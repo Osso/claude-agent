@@ -207,11 +207,11 @@ impl Scheduler {
                                     ..Default::default()
                                 },
                                 EnvVar {
-                                    name: "ANTHROPIC_API_KEY".into(),
+                                    name: "CLAUDE_CODE_OAUTH_TOKEN".into(),
                                     value_from: Some(EnvVarSource {
                                         secret_key_ref: Some(SecretKeySelector {
                                             name: "claude-agent-secrets".into(),
-                                            key: "anthropic-api-key".into(),
+                                            key: "claude-oauth-token".into(),
                                             optional: Some(false),
                                         }),
                                         ..Default::default()
