@@ -163,6 +163,7 @@ pub async fn fetch_review_payload(
         title: mr.title,
         description: mr.description,
         author: mr.author.username,
+        action: "open".into(),
     })
 }
 
@@ -222,6 +223,13 @@ pub struct ReviewPayload {
     pub title: String,
     pub description: Option<String>,
     pub author: String,
+    /// Webhook action: "open", "reopen", "update", etc.
+    #[serde(default = "default_action")]
+    pub action: String,
+}
+
+fn default_action() -> String {
+    "open".into()
 }
 
 impl From<&MergeRequestEvent> for ReviewPayload {
@@ -244,6 +252,11 @@ impl From<&MergeRequestEvent> for ReviewPayload {
             title: event.object_attributes.title.clone(),
             description: event.object_attributes.description.clone(),
             author: event.user.username.clone(),
+            action: event
+                .object_attributes
+                .action
+                .clone()
+                .unwrap_or_else(|| "open".into()),
         }
     }
 }

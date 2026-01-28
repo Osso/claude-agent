@@ -42,7 +42,50 @@ The GITLAB_TOKEN environment variable is already configured.
 2. If needed, read full files for context using the Read tool
 3. Post your review as an MR comment using `gitlab mr comment`
 
+If the MR looks good and has no significant issues, approve it:
+
+```bash
+gitlab mr approve <MR_IID> -p <PROJECT>
+```
+
 Be constructive, specific, and reference file paths and line numbers when possible.
+"#;
+
+/// System prompt for update reviews (new pushes to existing MR).
+pub const UPDATE_SYSTEM_PROMPT: &str = r#"You are an expert code reviewer. The author has pushed new changes to a merge request that was previously reviewed.
+
+## Your Task
+
+You are given:
+1. The new diff (changes since last review)
+2. Unresolved discussion threads from previous reviews
+
+## Instructions
+
+- Review each unresolved discussion thread against the new diff
+- If a thread's concern is addressed by the new changes, reply to it acknowledging the fix
+- If a thread's concern is NOT addressed, do not reply to it (leave it for the author)
+- If the new changes introduce NEW issues not covered by existing threads, post a new comment
+- Do NOT re-review the entire MR — focus only on new changes and existing threads
+
+## Posting Replies
+
+Reply to existing discussion threads:
+```bash
+gitlab mr reply <MR_IID> --discussion <DISCUSSION_ID> -m "Your reply" -p <PROJECT>
+```
+
+Post new comments for new issues only:
+```bash
+gitlab mr comment <MR_IID> -m "Your comment" -p <PROJECT>
+```
+
+If all unresolved threads are addressed and the new changes look good, approve the MR:
+```bash
+gitlab mr approve <MR_IID> -p <PROJECT>
+```
+
+The GITLAB_TOKEN environment variable is already configured.
 "#;
 
 /// MR Review Agent.
@@ -100,6 +143,41 @@ impl MrReviewAgent {
 
         prompt.push_str(
             "Review this merge request and post your feedback as a comment using `gitlab mr comment`.",
+        );
+
+        prompt
+    }
+
+    /// Build prompt for update reviews (new push to existing MR).
+    pub fn build_update_prompt(&self, discussions: &str) -> String {
+        let mut prompt = String::new();
+
+        prompt.push_str(UPDATE_SYSTEM_PROMPT);
+        prompt.push_str("\n\n---\n\n");
+
+        prompt.push_str("## Merge Request Details\n\n");
+        prompt.push_str(&format!("**Project**: {}\n", self.context.project));
+        prompt.push_str(&format!("**MR IID**: {}\n", self.context.mr_id));
+        prompt.push_str(&format!("**Title**: {}\n", self.context.title));
+        prompt.push_str(&format!(
+            "**Branch**: {} → {}\n",
+            self.context.source_branch, self.context.target_branch
+        ));
+        prompt.push_str(&format!("**Author**: {}\n", self.context.author));
+
+        prompt.push_str("\n## Unresolved Discussion Threads\n\n");
+        if discussions.is_empty() {
+            prompt.push_str("_No unresolved threads._\n");
+        } else {
+            prompt.push_str(discussions);
+        }
+
+        prompt.push_str("\n## New Changes (Diff)\n\n```diff\n");
+        prompt.push_str(&self.context.diff);
+        prompt.push_str("\n```\n\n");
+
+        prompt.push_str(
+            "Review the unresolved threads and new diff. Reply to threads addressed by the new changes, and post new comments only for new issues.",
         );
 
         prompt

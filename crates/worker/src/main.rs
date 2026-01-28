@@ -38,6 +38,13 @@ struct ReviewPayload {
     description: Option<String>,
     /// Author username
     author: String,
+    /// Webhook action: "open", "reopen", "update", etc.
+    #[serde(default = "default_action")]
+    action: String,
+}
+
+fn default_action() -> String {
+    "open".into()
 }
 
 fn main() -> Result<()> {
@@ -86,9 +93,20 @@ fn main() -> Result<()> {
     };
 
     let agent = MrReviewAgent::new(context, &work_dir);
-    let prompt = agent.build_prompt();
 
-    info!("Running Claude review");
+    let prompt = if payload.action == "update" {
+        let discussions = fetch_unresolved_discussions(&payload, &gitlab_token)?;
+        info!(
+            threads = discussions.len(),
+            "Fetched unresolved discussion threads"
+        );
+        let formatted = format_discussions(&discussions);
+        agent.build_update_prompt(&formatted)
+    } else {
+        agent.build_prompt()
+    };
+
+    info!(action = %payload.action, "Running Claude review");
     run_claude(&work_dir, &prompt)?;
 
     info!("Review completed");
@@ -198,6 +216,94 @@ fn get_changed_files(repo_dir: &PathBuf, target_branch: &str) -> Result<Vec<Stri
         .collect();
 
     Ok(files)
+}
+
+/// Fetch unresolved discussion threads from GitLab API.
+fn fetch_unresolved_discussions(
+    payload: &ReviewPayload,
+    token: &str,
+) -> Result<Vec<serde_json::Value>> {
+    let encoded_project = urlencoding::encode(&payload.project);
+    let gitlab_url = &payload.gitlab_url;
+    let iid = &payload.mr_iid;
+    let url = format!(
+        "{gitlab_url}/api/v4/projects/{encoded_project}/merge_requests/{iid}/discussions?per_page=100"
+    );
+
+    let headers = claude_agent_server::gitlab::gitlab_auth_headers(token)?;
+    let client = reqwest::blocking::Client::builder()
+        .default_headers(headers)
+        .build()?;
+
+    let resp = client.get(&url).send().context("Failed to fetch discussions")?;
+    if !resp.status().is_success() {
+        bail!(
+            "GitLab discussions API {} - {}",
+            resp.status(),
+            resp.text().unwrap_or_default()
+        );
+    }
+
+    let discussions: Vec<serde_json::Value> = resp.json().context("Failed to parse discussions")?;
+
+    // Filter to unresolved threads only
+    let unresolved = discussions
+        .into_iter()
+        .filter(|d| {
+            d["notes"]
+                .as_array()
+                .map(|notes| {
+                    notes.iter().any(|n| {
+                        n["resolvable"].as_bool().unwrap_or(false)
+                            && !n["resolved"].as_bool().unwrap_or(true)
+                    })
+                })
+                .unwrap_or(false)
+        })
+        .collect();
+
+    Ok(unresolved)
+}
+
+/// Format discussions into text for the prompt.
+fn format_discussions(discussions: &[serde_json::Value]) -> String {
+    let mut out = String::new();
+    for d in discussions {
+        let disc_id = d["id"].as_str().unwrap_or("?");
+        let notes = match d["notes"].as_array() {
+            Some(n) => n,
+            None => continue,
+        };
+        let first = match notes.first() {
+            Some(n) => n,
+            None => continue,
+        };
+
+        // File position
+        if let Some(pos) = first["position"].as_object() {
+            let path = pos
+                .get("new_path")
+                .or(pos.get("old_path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let line = pos
+                .get("new_line")
+                .or(pos.get("old_line"))
+                .and_then(|v| v.as_u64())
+                .map(|l| l.to_string())
+                .unwrap_or_default();
+            out.push_str(&format!("### Thread {disc_id} ({path}:{line})\n\n"));
+        } else {
+            out.push_str(&format!("### Thread {disc_id}\n\n"));
+        }
+
+        for note in notes {
+            let author = note["author"]["username"].as_str().unwrap_or("?");
+            let body = note["body"].as_str().unwrap_or("");
+            out.push_str(&format!("**@{author}**: {body}\n\n"));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
