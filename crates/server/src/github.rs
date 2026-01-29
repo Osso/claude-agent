@@ -109,6 +109,23 @@ impl From<&PullRequestEvent> for ReviewPayload {
     }
 }
 
+/// Check if a branch exists in a GitHub repository.
+pub async fn branch_exists(repo: &str, branch: &str, token: &str) -> Result<bool, anyhow::Error> {
+    let client = reqwest::Client::builder()
+        .user_agent("claude-agent")
+        .build()?;
+
+    let url = format!("https://api.github.com/repos/{repo}/branches/{branch}");
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await?;
+
+    Ok(resp.status().is_success())
+}
+
 /// Verify GitHub HMAC-SHA256 webhook signature.
 pub fn verify_signature(secret: &str, body: &[u8], signature: &str) -> bool {
     let sig_hex = match signature.strip_prefix("sha256=") {

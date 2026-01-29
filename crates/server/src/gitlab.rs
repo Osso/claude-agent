@@ -155,6 +155,28 @@ impl From<&PipelineEvent> for ReviewPayload {
     }
 }
 
+/// Check if a branch exists in a GitLab project.
+pub async fn branch_exists(
+    gitlab_url: &str,
+    project: &str,
+    branch: &str,
+    token: &str,
+) -> Result<bool, anyhow::Error> {
+    let headers = gitlab_auth_headers(token)?;
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()?;
+
+    let encoded_project = urlencoding::encode(project);
+    let encoded_branch = urlencoding::encode(branch);
+    let base_url = gitlab_url.trim_end_matches('/');
+
+    let url = format!("{base_url}/api/v4/projects/{encoded_project}/repository/branches/{encoded_branch}");
+    let resp = client.get(&url).send().await?;
+
+    Ok(resp.status().is_success())
+}
+
 /// Build auth headers for GitLab API requests.
 /// Supports both PAT (PRIVATE-TOKEN) and OAuth (Bearer) tokens.
 pub fn gitlab_auth_headers(token: &str) -> Result<HeaderMap, anyhow::Error> {
