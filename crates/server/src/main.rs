@@ -10,11 +10,12 @@ use anyhow::{Context, Result};
 use tokio::net::TcpListener;
 use tokio::signal;
 use tower_http::trace::TraceLayer;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod github;
 mod gitlab;
+mod jira_token;
 mod payload;
 mod queue;
 mod scheduler;
@@ -22,6 +23,7 @@ mod sentry;
 mod sentry_api;
 mod webhook;
 
+use jira_token::JiraTokenManager;
 use queue::Queue;
 use scheduler::Scheduler;
 use sentry::SentryProjectMapping;
@@ -39,7 +41,7 @@ async fn main() -> Result<()> {
         .with_target(false)
         .init();
 
-    const VERSION: &str = "2026.01.28.6";
+    const VERSION: &str = "2026.01.29.3";
     info!(version = VERSION, "Claude Agent Server starting");
 
     // Get configuration from environment
@@ -55,12 +57,46 @@ async fn main() -> Result<()> {
     let sentry_project_mappings = parse_sentry_mappings();
     let listen_addr = env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8443".into());
 
+    // Jira OAuth configuration (optional)
+    let jira_client_id = env::var("JIRA_CLIENT_ID").ok();
+    let jira_client_secret = env::var("JIRA_CLIENT_SECRET").ok();
+    let jira_refresh_token = env::var("JIRA_REFRESH_TOKEN").ok();
+
     // Initialize queue
     let queue = Queue::new(&redis_url)
         .await
         .context("Failed to connect to Redis")?;
 
     info!(redis = %redis_url, "Connected to Redis");
+
+    // Initialize Jira token manager (optional)
+    let jira_token_manager = match (&jira_client_id, &jira_client_secret) {
+        (Some(client_id), Some(client_secret)) if !client_id.is_empty() => {
+            match JiraTokenManager::new(
+                kube::Client::try_default()
+                    .await
+                    .context("Failed to create K8s client for Jira token manager")?,
+                client_id.clone(),
+                client_secret.clone(),
+                jira_refresh_token.clone(),
+            )
+            .await
+            {
+                Ok(manager) => {
+                    info!("Jira token manager initialized");
+                    Some(Arc::new(manager))
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to initialize Jira token manager");
+                    None
+                }
+            }
+        }
+        _ => {
+            info!("Jira integration not configured (JIRA_CLIENT_ID/JIRA_CLIENT_SECRET not set)");
+            None
+        }
+    };
 
     // Build application state
     let state = AppState {
@@ -74,6 +110,7 @@ async fn main() -> Result<()> {
         claude_token,
         sentry_organization,
         sentry_project_mappings,
+        jira_token_manager: jira_token_manager.clone(),
     };
 
     // Build router
@@ -81,7 +118,7 @@ async fn main() -> Result<()> {
 
     // Start scheduler in background
     let scheduler = Arc::new(
-        Scheduler::new(queue)
+        Scheduler::new(queue, jira_token_manager)
             .await
             .context("Failed to create scheduler")?,
     );

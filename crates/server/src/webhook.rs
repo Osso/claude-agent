@@ -15,6 +15,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::github::{verify_signature, PullRequestEvent};
 use crate::gitlab::{fetch_review_payload, MergeRequestEvent, PipelineEvent, ReviewPayload};
+use crate::jira_token::JiraTokenManager;
 use crate::payload::SentryFixPayload;
 use crate::queue::Queue;
 use crate::sentry::{self, SentryProjectMapping, SentryWebhookEvent};
@@ -40,6 +41,8 @@ pub struct AppState {
     pub sentry_organization: Option<String>,
     /// Sentry project mappings
     pub sentry_project_mappings: Vec<SentryProjectMapping>,
+    /// Jira token manager for OAuth token refresh
+    pub jira_token_manager: Option<Arc<JiraTokenManager>>,
 }
 
 impl AppState {
@@ -431,6 +434,39 @@ async fn sentry_webhook_handler(
         .as_ref()
         .ok_or_else(|| AppError::Internal("SENTRY_ORGANIZATION not configured".into()))?;
 
+    // Check if fix branch already exists
+    let branch_name = format!("sentry-fix/{}", issue.short_id.to_lowercase());
+    let branch_exists = if mapping.vcs_platform == "github" {
+        let token = state.github_token.as_ref().ok_or_else(|| {
+            AppError::Internal("GITHUB_TOKEN not configured for GitHub repo".into())
+        })?;
+        crate::github::branch_exists(&mapping.vcs_project, &branch_name, token).await
+    } else {
+        crate::gitlab::branch_exists(
+            "https://gitlab.com",
+            &mapping.vcs_project,
+            &branch_name,
+            &state.gitlab_token,
+        )
+        .await
+    };
+
+    if branch_exists.unwrap_or(false) {
+        info!(
+            branch = %branch_name,
+            issue = %issue.short_id,
+            "Fix branch already exists, skipping"
+        );
+        return Ok((
+            StatusCode::OK,
+            Json(WebhookResponse {
+                status: "skipped".into(),
+                message: Some(format!("Branch {} already exists", branch_name)),
+                job_id: None,
+            }),
+        ));
+    }
+
     let payload = SentryFixPayload {
         issue_id: issue.id.clone(),
         short_id: issue.short_id.clone(),
@@ -696,19 +732,79 @@ async fn queue_sentry_fix_handler(
             ))
         })?;
 
-    // We'll construct a minimal payload - the worker will fetch full details
+    // Fetch issue details from Sentry to get the short_id
+    let sentry_token = state.sentry_auth_token.as_ref().ok_or_else(|| {
+        AppError::Internal("SENTRY_AUTH_TOKEN not configured".into())
+    })?;
+    let sentry_client = crate::sentry_api::SentryClient::new(&req.organization, sentry_token)
+        .map_err(|e| AppError::Internal(format!("Failed to create Sentry client: {e}")))?;
+
+    let issue = sentry_client
+        .get_issue(&req.issue_id)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to fetch Sentry issue: {e}")))?;
+
+    let short_id = issue["shortId"]
+        .as_str()
+        .unwrap_or(&req.issue_id)
+        .to_string();
+
+    // Check if fix branch already exists
+    let branch_name = format!("sentry-fix/{}", short_id.to_lowercase());
+    let branch_exists = if mapping.vcs_platform == "github" {
+        let token = state.github_token.as_ref().ok_or_else(|| {
+            AppError::Internal("GITHUB_TOKEN not configured for GitHub repo".into())
+        })?;
+        crate::github::branch_exists(&mapping.vcs_project, &branch_name, token).await
+    } else {
+        crate::gitlab::branch_exists(
+            "https://gitlab.com",
+            &mapping.vcs_project,
+            &branch_name,
+            &state.gitlab_token,
+        )
+        .await
+    };
+
+    if branch_exists.unwrap_or(false) {
+        info!(
+            branch = %branch_name,
+            issue = %short_id,
+            "Fix branch already exists, skipping"
+        );
+        return Ok((
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "skipped",
+                "message": format!("Branch {} already exists", branch_name),
+            })),
+        ));
+    }
+
+    // Construct payload with real short_id
     let payload = SentryFixPayload {
         issue_id: req.issue_id.clone(),
-        short_id: req.issue_id.clone(), // Will be overwritten by worker if numeric ID
-        title: String::new(),           // Worker will fetch
-        culprit: String::new(),         // Worker will fetch
-        platform: String::new(),        // Worker will fetch
-        issue_type: "error".into(),
-        issue_category: "error".into(),
-        web_url: format!(
-            "https://sentry.io/organizations/{}/issues/{}/",
-            req.organization, req.issue_id
-        ),
+        short_id: short_id.clone(),
+        title: issue["title"].as_str().unwrap_or("").to_string(),
+        culprit: issue["culprit"].as_str().unwrap_or("").to_string(),
+        platform: issue["platform"].as_str().unwrap_or("").to_string(),
+        issue_type: issue["issueType"]
+            .as_str()
+            .unwrap_or("error")
+            .to_string(),
+        issue_category: issue["issueCategory"]
+            .as_str()
+            .unwrap_or("error")
+            .to_string(),
+        web_url: issue["permalink"]
+            .as_str()
+            .map(String::from)
+            .unwrap_or_else(|| {
+                format!(
+                    "https://sentry.io/organizations/{}/issues/{}/",
+                    req.organization, req.issue_id
+                )
+            }),
         project_slug: req.project.clone(),
         organization: req.organization.clone(),
         clone_url: mapping.clone_url.clone(),
@@ -723,7 +819,7 @@ async fn queue_sentry_fix_handler(
         job_id = %job_id,
         org = %req.organization,
         project = %req.project,
-        issue = %req.issue_id,
+        issue = %short_id,
         "Queued Sentry fix via API"
     );
 
@@ -784,11 +880,23 @@ async fn check_tokens_handler(
         },
     };
 
+    // Check Jira token
+    let jira = match &state.jira_token_manager {
+        Some(manager) => check_jira_token(manager).await,
+        None => TokenStatus {
+            configured: false,
+            valid: false,
+            info: None,
+            error: None,
+        },
+    };
+
     Ok(Json(serde_json::json!({
         "gitlab": gitlab,
         "github": github,
         "sentry": sentry,
         "claude": claude,
+        "jira": jira,
     })))
 }
 
@@ -957,6 +1065,27 @@ async fn check_claude_token(_client: &reqwest::Client, token: &str) -> TokenStat
             info: None,
             error: Some("unrecognized token format".to_string()),
         }
+    }
+}
+
+async fn check_jira_token(manager: &JiraTokenManager) -> TokenStatus {
+    // Try to get an access token - this will refresh if needed
+    match manager.get_access_token_with_expiry().await {
+        Ok((_token, expires_in_secs)) => {
+            let mins = expires_in_secs / 60;
+            TokenStatus {
+                configured: true,
+                valid: true,
+                info: Some(format!("expires in {}m", mins)),
+                error: None,
+            }
+        }
+        Err(e) => TokenStatus {
+            configured: true,
+            valid: false,
+            info: None,
+            error: Some(e.to_string()),
+        },
     }
 }
 

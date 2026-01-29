@@ -18,6 +18,7 @@ use kube::Client;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
+use crate::jira_token::JiraTokenManager;
 use crate::queue::{Queue, QueueItem};
 
 const NAMESPACE: &str = "claude-agent";
@@ -28,6 +29,76 @@ fn worker_image() -> String {
 }
 const JOB_TTL_SECONDS: i32 = 900; // 15 minutes after completion
 
+/// Build environment variables for worker container.
+fn build_env_vars(payload_b64: String, jira_access_token: Option<String>) -> Vec<EnvVar> {
+    let mut env_vars = vec![
+        EnvVar {
+            name: "REVIEW_PAYLOAD".into(),
+            value: Some(payload_b64),
+            ..Default::default()
+        },
+        EnvVar {
+            name: "CLAUDE_CODE_OAUTH_TOKEN".into(),
+            value_from: Some(EnvVarSource {
+                secret_key_ref: Some(SecretKeySelector {
+                    name: "claude-agent-secrets".into(),
+                    key: "claude-oauth-token".into(),
+                    optional: Some(false),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        EnvVar {
+            name: "GITLAB_TOKEN".into(),
+            value_from: Some(EnvVarSource {
+                secret_key_ref: Some(SecretKeySelector {
+                    name: "claude-agent-secrets".into(),
+                    key: "gitlab-token".into(),
+                    optional: Some(false),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        EnvVar {
+            name: "GITHUB_TOKEN".into(),
+            value_from: Some(EnvVarSource {
+                secret_key_ref: Some(SecretKeySelector {
+                    name: "claude-agent-secrets".into(),
+                    key: "github-token".into(),
+                    optional: Some(true),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        EnvVar {
+            name: "SENTRY_AUTH_TOKEN".into(),
+            value_from: Some(EnvVarSource {
+                secret_key_ref: Some(SecretKeySelector {
+                    name: "claude-agent-secrets".into(),
+                    key: "sentry-auth-token".into(),
+                    optional: Some(true),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    ];
+
+    // Add Jira access token if available
+    if let Some(token) = jira_access_token {
+        env_vars.push(EnvVar {
+            name: "JIRA_ACCESS_TOKEN".into(),
+            value: Some(token),
+            ..Default::default()
+        });
+    }
+
+    env_vars
+}
+
 /// Job scheduler that processes the queue sequentially.
 pub struct Scheduler {
     queue: Queue,
@@ -35,10 +106,14 @@ pub struct Scheduler {
     k8s_client: Client,
     jobs_api: Api<Job>,
     running: Arc<Mutex<bool>>,
+    jira_token_manager: Option<Arc<JiraTokenManager>>,
 }
 
 impl Scheduler {
-    pub async fn new(queue: Queue) -> Result<Self, kube::Error> {
+    pub async fn new(
+        queue: Queue,
+        jira_token_manager: Option<Arc<JiraTokenManager>>,
+    ) -> Result<Self, kube::Error> {
         let k8s_client = Client::try_default().await?;
         let jobs_api = Api::namespaced(k8s_client.clone(), NAMESPACE);
 
@@ -47,6 +122,7 @@ impl Scheduler {
             k8s_client,
             jobs_api,
             running: Arc::new(Mutex::new(false)),
+            jira_token_manager,
         })
     }
 
@@ -165,6 +241,19 @@ impl Scheduler {
         let payload_json = serde_json::to_string(&item.payload).unwrap();
         let payload_b64 = base64::engine::general_purpose::STANDARD.encode(&payload_json);
 
+        // Get fresh Jira access token if configured
+        let jira_access_token = if let Some(ref manager) = self.jira_token_manager {
+            match manager.get_access_token().await {
+                Ok(token) => Some(token),
+                Err(e) => {
+                    warn!(error = %e, "Failed to get Jira access token, job will run without Jira integration");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let job = Job {
             metadata: kube::api::ObjectMeta {
                 name: Some(job_name.clone()),
@@ -200,61 +289,7 @@ impl Scheduler {
                         containers: vec![Container {
                             name: "worker".into(),
                             image: Some(worker_image()),
-                            env: Some(vec![
-                                EnvVar {
-                                    name: "REVIEW_PAYLOAD".into(),
-                                    value: Some(payload_b64),
-                                    ..Default::default()
-                                },
-                                EnvVar {
-                                    name: "CLAUDE_CODE_OAUTH_TOKEN".into(),
-                                    value_from: Some(EnvVarSource {
-                                        secret_key_ref: Some(SecretKeySelector {
-                                            name: "claude-agent-secrets".into(),
-                                            key: "claude-oauth-token".into(),
-                                            optional: Some(false),
-                                        }),
-                                        ..Default::default()
-                                    }),
-                                    ..Default::default()
-                                },
-                                EnvVar {
-                                    name: "GITLAB_TOKEN".into(),
-                                    value_from: Some(EnvVarSource {
-                                        secret_key_ref: Some(SecretKeySelector {
-                                            name: "claude-agent-secrets".into(),
-                                            key: "gitlab-token".into(),
-                                            optional: Some(false),
-                                        }),
-                                        ..Default::default()
-                                    }),
-                                    ..Default::default()
-                                },
-                                EnvVar {
-                                    name: "GITHUB_TOKEN".into(),
-                                    value_from: Some(EnvVarSource {
-                                        secret_key_ref: Some(SecretKeySelector {
-                                            name: "claude-agent-secrets".into(),
-                                            key: "github-token".into(),
-                                            optional: Some(true),
-                                        }),
-                                        ..Default::default()
-                                    }),
-                                    ..Default::default()
-                                },
-                                EnvVar {
-                                    name: "SENTRY_AUTH_TOKEN".into(),
-                                    value_from: Some(EnvVarSource {
-                                        secret_key_ref: Some(SecretKeySelector {
-                                            name: "claude-agent-secrets".into(),
-                                            key: "sentry-auth-token".into(),
-                                            optional: Some(true),
-                                        }),
-                                        ..Default::default()
-                                    }),
-                                    ..Default::default()
-                                },
-                            ]),
+                            env: Some(build_env_vars(payload_b64, jira_access_token)),
                             volume_mounts: Some(vec![VolumeMount {
                                 name: "workdir".into(),
                                 mount_path: "/work".into(),

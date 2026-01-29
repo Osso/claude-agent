@@ -29,6 +29,11 @@ OPS_DIR="${OPS_DIR:-$HOME/Projects/globalcomix/ops}"
 DEPLOYMENT_FILE="$OPS_DIR/apps/claude-agent/deployment.yaml"
 
 if [[ -f "$DEPLOYMENT_FILE" ]]; then
+    # Pull ops repo first to avoid rebase conflicts
+    echo ""
+    echo "=== Pulling ops repo ==="
+    (cd "$OPS_DIR" && git pull --rebase)
+
     # Update server image tag
     sed -i "s|claude-agent-server:[^ ]*|claude-agent-server:$TAG|g" "$DEPLOYMENT_FILE"
     # Update worker image tag in WORKER_IMAGE env
@@ -41,16 +46,19 @@ if [[ -f "$DEPLOYMENT_FILE" ]]; then
     echo "=== Committing ops changes ==="
     (
         cd "$OPS_DIR"
-        git pull --rebase
         git add apps/claude-agent/deployment.yaml
         git commit -m "claude-agent: update to $TAG" || echo "No changes to commit"
         git push
     )
+
+    # Reconcile Flux to apply changes immediately
+    echo ""
+    echo "=== Reconciling Flux ==="
+    (cd "$OPS_DIR" && ./scripts/reconcile-flux.sh apps)
 else
     echo "Warning: $DEPLOYMENT_FILE not found, skipping manifest update"
 fi
 
 echo ""
 echo "=== Deployment complete ==="
-echo "Flux will reconcile the new tags automatically."
 kubectl get pods -n "$NAMESPACE"

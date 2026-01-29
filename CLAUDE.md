@@ -68,6 +68,7 @@ GitLab/GitHub/Sentry Webhook → Server → Redis Queue → Scheduler → K8s Jo
 - `crates/server/src/gitlab.rs` - GitLab webhook event parsing
 - `crates/server/src/sentry.rs` - Sentry webhook event parsing
 - `crates/server/src/sentry_api.rs` - Sentry API client
+- `crates/server/src/jira_token.rs` - Jira OAuth token manager with K8s secret persistence
 - `k8s/network-policy.yaml` - Network isolation rules
 
 ## Configuration
@@ -86,6 +87,10 @@ GitLab/GitHub/Sentry Webhook → Server → Redis Queue → Scheduler → K8s Jo
 | `CLAUDE_CODE_OAUTH_TOKEN` | Claude OAuth token (from `claude setup-token`) | Worker |
 | `SENTRY_AUTH_TOKEN` | Sentry API token (for fetching events) | Worker (optional) |
 | `REVIEW_PAYLOAD` | Base64-encoded job payload | Worker (set by scheduler) |
+| `JIRA_CLIENT_ID` | Jira OAuth client ID | Server (optional) |
+| `JIRA_CLIENT_SECRET` | Jira OAuth client secret | Server (optional) |
+| `JIRA_REFRESH_TOKEN` | Initial Jira refresh token (bootstrap) | Server (optional) |
+| `JIRA_ACCESS_TOKEN` | Jira API access token | Worker (set by scheduler) |
 
 ### Sentry Project Mappings
 

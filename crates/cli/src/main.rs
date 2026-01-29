@@ -307,9 +307,15 @@ async fn main() -> Result<()> {
         }
 
         Commands::SentryFix { org, project, issue } => {
-            let id = api_queue_sentry_fix(&server_url, &api_key, &org, &project, &issue).await?;
-            println!("Queued Sentry fix for {} in {}/{}", issue, org, project);
-            println!("Job ID: {id}");
+            match api_queue_sentry_fix(&server_url, &api_key, &org, &project, &issue).await? {
+                SentryFixResult::Queued(id) => {
+                    println!("Queued Sentry fix for {} in {}/{}", issue, org, project);
+                    println!("Job ID: {id}");
+                }
+                SentryFixResult::Skipped(msg) => {
+                    println!("Skipped: {msg}");
+                }
+            }
         }
 
         Commands::Stats => {
@@ -845,6 +851,12 @@ async fn api_queue_github_review(
     Ok(result.job_id)
 }
 
+/// Result of queuing a Sentry fix.
+enum SentryFixResult {
+    Queued(String),
+    Skipped(String),
+}
+
 /// Queue a Sentry fix via HTTP API.
 async fn api_queue_sentry_fix(
     server_url: &str,
@@ -852,7 +864,7 @@ async fn api_queue_sentry_fix(
     org: &str,
     project: &str,
     issue_id: &str,
-) -> Result<String> {
+) -> Result<SentryFixResult> {
     let client = create_api_client(api_key)?;
     let url = format!("{}/api/sentry-fix", server_url.trim_end_matches('/'));
 
@@ -873,17 +885,21 @@ async fn api_queue_sentry_fix(
         bail!("API error: {} - {}", resp.status(), resp.text().await?);
     }
 
-    #[derive(Deserialize)]
-    struct QueueSentryResponse {
-        job_id: String,
-    }
-
-    let result: QueueSentryResponse = resp
+    let result: serde_json::Value = resp
         .json()
         .await
         .context("Failed to parse queue response")?;
 
-    Ok(result.job_id)
+    let status = result["status"].as_str().unwrap_or("");
+    if status == "skipped" {
+        let message = result["message"].as_str().unwrap_or("Already exists");
+        Ok(SentryFixResult::Skipped(message.to_string()))
+    } else {
+        let job_id = result["job_id"]
+            .as_str()
+            .context("Missing job_id in response")?;
+        Ok(SentryFixResult::Queued(job_id.to_string()))
+    }
 }
 
 /// Check server's configured tokens via API.
@@ -915,6 +931,7 @@ async fn api_check_tokens(server_url: &str, api_key: &str) -> Result<()> {
         github: TokenStatus,
         sentry: TokenStatus,
         claude: TokenStatus,
+        jira: TokenStatus,
     }
 
     let result: CheckTokensResponse = resp
@@ -965,6 +982,17 @@ async fn api_check_tokens(server_url: &str, api_key: &str) -> Result<()> {
         println!("✓ valid ({})", result.claude.info.as_deref().unwrap_or(""));
     } else {
         println!("✗ invalid - {}", result.claude.error.as_deref().unwrap_or("unknown"));
+        all_valid = false;
+    }
+
+    // Print Jira status
+    print!("Jira:    ");
+    if !result.jira.configured {
+        println!("- not configured");
+    } else if result.jira.valid {
+        println!("✓ valid ({})", result.jira.info.as_deref().unwrap_or(""));
+    } else {
+        println!("✗ invalid - {}", result.jira.error.as_deref().unwrap_or("unknown"));
         all_valid = false;
     }
 
