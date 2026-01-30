@@ -1,11 +1,14 @@
 //! Unified job payload types for the queue.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::gitlab::ReviewPayload;
 
 /// Unified job payload enum supporting all job types.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Serializes with a `"type"` tag to distinguish variants.
+/// Deserializes with backward compatibility for legacy payloads that don't have the tag.
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum JobPayload {
     /// MR/PR review job (GitLab or GitHub)
@@ -15,6 +18,39 @@ pub enum JobPayload {
     /// Sentry issue fix job
     #[serde(rename = "sentry_fix")]
     SentryFix(SentryFixPayload),
+}
+
+impl<'de> Deserialize<'de> for JobPayload {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // Deserialize to raw Value first so we can try multiple formats
+        let value = serde_json::Value::deserialize(deserializer)?;
+
+        // Try tagged format first (has "type" field)
+        if value.get("type").is_some() {
+            #[derive(Deserialize)]
+            #[serde(tag = "type")]
+            enum Tagged {
+                #[serde(rename = "review")]
+                Review(ReviewPayload),
+                #[serde(rename = "sentry_fix")]
+                SentryFix(SentryFixPayload),
+            }
+
+            return match serde_json::from_value::<Tagged>(value) {
+                Ok(Tagged::Review(p)) => Ok(JobPayload::Review(p)),
+                Ok(Tagged::SentryFix(p)) => Ok(JobPayload::SentryFix(p)),
+                Err(e) => Err(serde::de::Error::custom(e)),
+            };
+        }
+
+        // Fall back to legacy ReviewPayload format (no type tag)
+        serde_json::from_value::<ReviewPayload>(value)
+            .map(JobPayload::Review)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 impl JobPayload {
@@ -149,6 +185,30 @@ mod tests {
 
         let parsed: JobPayload = serde_json::from_str(&json).unwrap();
         assert!(matches!(parsed, JobPayload::SentryFix(_)));
+    }
+
+    #[test]
+    fn test_legacy_review_payload_deserialization() {
+        // Legacy format without "type" tag
+        let json = r#"{
+            "gitlab_url": "https://gitlab.com",
+            "project": "Globalcomix/gc",
+            "mr_iid": "2604",
+            "clone_url": "https://gitlab.com/Globalcomix/gc.git",
+            "source_branch": "feature",
+            "target_branch": "master",
+            "title": "Test MR",
+            "author": "test",
+            "action": "open",
+            "platform": "gitlab"
+        }"#;
+
+        let parsed: JobPayload = serde_json::from_str(json).unwrap();
+        assert!(matches!(parsed, JobPayload::Review(_)));
+        if let JobPayload::Review(p) = parsed {
+            assert_eq!(p.project, "Globalcomix/gc");
+            assert_eq!(p.mr_iid, "2604");
+        }
     }
 
     #[test]

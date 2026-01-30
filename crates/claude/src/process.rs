@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use async_trait::async_trait;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info};
 
 use claude_agent_core::{ClaudeBackend, ClaudeResponse, Error, Message, MessageRole};
 

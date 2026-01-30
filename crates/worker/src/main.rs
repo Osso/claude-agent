@@ -18,7 +18,7 @@ use claude_agent_core::ReviewContext;
 use claude_agent_server::sentry_api::{extract_tags, format_stacktrace, SentryClient};
 use claude_agent_server::{JobPayload, SentryFixPayload};
 
-const VERSION: &str = "2026.01.28.6";
+const VERSION: &str = "2026.01.30.1";
 
 fn main() -> Result<()> {
     let subscriber = FmtSubscriber::builder()
@@ -223,7 +223,17 @@ fn decode_payload() -> Result<JobPayload> {
     let payload_bytes = base64::engine::general_purpose::STANDARD
         .decode(&payload_b64)
         .context("Failed to decode base64 payload")?;
-    serde_json::from_slice(&payload_bytes).context("Failed to parse payload JSON")
+
+    // Try parsing as the new tagged JobPayload format first
+    if let Ok(payload) = serde_json::from_slice::<JobPayload>(&payload_bytes) {
+        return Ok(payload);
+    }
+
+    // Fall back to legacy ReviewPayload format (items queued before JobPayload was added)
+    let legacy: claude_agent_server::ReviewPayload =
+        serde_json::from_slice(&payload_bytes).context("Failed to parse payload JSON")?;
+    warn!("Parsed legacy ReviewPayload format (missing 'type' tag)");
+    Ok(JobPayload::Review(legacy))
 }
 
 /// Run Claude Code with tools enabled. Claude will post the review itself.

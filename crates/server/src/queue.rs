@@ -76,22 +76,6 @@ impl Queue {
         }
     }
 
-    /// Try to pop without blocking.
-    pub async fn try_pop(&self) -> Result<Option<QueueItem>, redis::RedisError> {
-        let mut conn = self.conn.clone();
-
-        let result: Option<String> = conn.lpop(QUEUE_KEY, None).await?;
-
-        match result {
-            Some(json) => {
-                let item: QueueItem = serde_json::from_str(&json).unwrap();
-                debug!(id = %item.id, "Popped review job");
-                Ok(Some(item))
-            }
-            None => Ok(None),
-        }
-    }
-
     /// Mark an item as processing.
     pub async fn mark_processing(&self, item: &QueueItem) -> Result<(), redis::RedisError> {
         let mut conn = self.conn.clone();
@@ -195,14 +179,6 @@ impl Queue {
         }
 
         Ok(false)
-    }
-
-    /// Clear all failed items.
-    pub async fn clear_failed(&self) -> Result<usize, redis::RedisError> {
-        let mut conn = self.conn.clone();
-        let count: usize = conn.llen(FAILED_KEY).await?;
-        conn.del::<_, ()>(FAILED_KEY).await?;
-        Ok(count)
     }
 }
 
