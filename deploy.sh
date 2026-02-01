@@ -2,10 +2,48 @@
 set -euo pipefail
 
 REGISTRY="registry.digitalocean.com/globalcomix"
-TAG="${1:-latest}"
+BASE_TAG="${1:-$(date +%Y.%m.%d)}"
 NAMESPACE="claude-agent"
 
+# Check if a tag exists in the registry
+tag_exists() {
+    local tag="$1"
+    docker manifest inspect "$REGISTRY/claude-agent-server:$tag" &>/dev/null
+}
+
+# Find next available tag (auto-increment suffix if base tag exists)
+find_next_tag() {
+    local base="$1"
+
+    if ! tag_exists "$base"; then
+        echo "$base"
+        return
+    fi
+
+    local suffix=1
+    while tag_exists "$base.$suffix"; do
+        ((suffix++))
+    done
+    echo "$base.$suffix"
+}
+
+TAG=$(find_next_tag "$BASE_TAG")
+
 echo "=== Deploying claude-agent (tag: $TAG) ==="
+
+# Update VERSION constants in source files
+update_version() {
+    local file="$1"
+    local current
+    current=$(grep -oP 'const VERSION: &str = "\K[^"]+' "$file" || echo "")
+    sed -i "s|const VERSION: &str = \"[^\"]*\"|const VERSION: \&str = \"$TAG\"|" "$file"
+    echo "Updated $file: $current -> $TAG"
+}
+
+echo ""
+echo "=== Updating VERSION constants ==="
+update_version "crates/server/src/main.rs"
+update_version "crates/worker/src/main.rs"
 
 # Build images
 ./build.sh "$TAG"

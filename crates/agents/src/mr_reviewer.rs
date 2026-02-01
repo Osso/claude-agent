@@ -208,16 +208,19 @@ pub const LINT_FIX_SYSTEM_PROMPT: &str = r#"You are a code fixer. A CI pipeline 
 
 ## Instructions
 
-1. Read the linter output below carefully
-2. For each error, read the relevant source file to understand context
-3. Fix the error by editing the file
-4. After all fixes are applied, commit and push:
-
-```bash
-git add -A
-git commit -m "fix: resolve linter errors"
-git push origin HEAD
-```
+1. First, fetch the CI lint job logs to see what errors occurred:
+   ```bash
+   gitlab ci logs lint -p {PROJECT} -b {BRANCH}
+   ```
+2. Read the linter output carefully to identify the errors
+3. For each error, read the relevant source file to understand context
+4. Fix the error by editing the file
+5. After all fixes are applied, commit and push:
+   ```bash
+   git add -A
+   git commit -m "fix: resolve linter errors"
+   git push origin HEAD
+   ```
 
 ## Rules
 
@@ -230,7 +233,7 @@ git push origin HEAD
 
 - Read files with the Read tool
 - Edit files with the Edit tool
-- Run commands: `git add`, `git commit`, `git push`, linters, `cat`, `head`, `tail`, `grep`, `rg`, `ls`, `find`
+- Run commands: `git add`, `git commit`, `git push`, `gitlab ci logs`, `cat`, `head`, `tail`, `grep`, `rg`, `ls`, `find`
 "#;
 
 /// MR Review Agent.
@@ -414,10 +417,14 @@ impl MrReviewAgent {
     }
 
     /// Build prompt for lint-fix jobs (CI pipeline failure).
-    pub fn build_lint_fix_prompt(&self, linter_output: &str) -> String {
+    pub fn build_lint_fix_prompt(&self) -> String {
         let mut prompt = String::new();
 
-        prompt.push_str(LINT_FIX_SYSTEM_PROMPT);
+        // Replace placeholders in system prompt
+        let system_prompt = LINT_FIX_SYSTEM_PROMPT
+            .replace("{PROJECT}", &self.context.project)
+            .replace("{BRANCH}", &self.context.source_branch);
+        prompt.push_str(&system_prompt);
         prompt.push_str("\n\n---\n\n");
 
         prompt.push_str("## Merge Request Details\n\n");
@@ -434,13 +441,13 @@ impl MrReviewAgent {
             prompt.push_str(&format!("- `{}`\n", file));
         }
 
-        prompt.push_str("\n## Linter Output\n\n```\n");
-        prompt.push_str(linter_output);
-        prompt.push_str("\n```\n\n");
-
-        prompt.push_str(
-            "Fix the linter errors above. Only modify files that have errors. Commit and push when done.",
-        );
+        prompt.push_str("\n## Your Task\n\n");
+        prompt.push_str(&format!(
+            "1. Run `gitlab ci logs lint -p {} -b {}` to see the linter errors\n",
+            self.context.project, self.context.source_branch
+        ));
+        prompt.push_str("2. Fix the errors in the changed files\n");
+        prompt.push_str("3. Commit and push your fixes\n");
 
         prompt
     }

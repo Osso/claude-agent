@@ -101,13 +101,8 @@ fn run_review_job(payload: claude_agent_server::ReviewPayload) -> Result<()> {
     let agent = MrReviewAgent::new(context, &work_dir);
 
     let prompt = if payload.action == "lint_fix" {
-        let linter_output = run_linters(&work_dir, &changed_files_ref)?;
-        if linter_output.trim().is_empty() {
-            info!("Linters produced no output, skipping lint-fix");
-            return Ok(());
-        }
-        info!(output_len = linter_output.len(), "Collected linter output");
-        agent.build_lint_fix_prompt(&linter_output)
+        info!("Building lint-fix prompt (will fetch CI logs via gitlab CLI)");
+        agent.build_lint_fix_prompt()
     } else if is_github {
         if payload.action == "update" {
             let discussions = fetch_github_review_comments(&payload, &token)?;

@@ -260,6 +260,96 @@ pub async fn fetch_review_payload(
     })
 }
 
+/// Fetch an open MR by source branch from GitLab API.
+/// Returns None if no open MR exists for the branch.
+pub async fn fetch_mr_by_branch(
+    gitlab_url: &str,
+    project: &str,
+    source_branch: &str,
+    token: &str,
+) -> Result<Option<ReviewPayload>, anyhow::Error> {
+    use anyhow::Context;
+
+    let headers = gitlab_auth_headers(token)?;
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()?;
+
+    let encoded_project = urlencoding::encode(project);
+    let encoded_branch = urlencoding::encode(source_branch);
+    let base_url = gitlab_url.trim_end_matches('/');
+
+    // Fetch MRs for this source branch
+    let mr_url = format!(
+        "{base_url}/api/v4/projects/{encoded_project}/merge_requests?source_branch={encoded_branch}&state=opened"
+    );
+    let mr_resp = client
+        .get(&mr_url)
+        .send()
+        .await
+        .context("GitLab MR list request failed")?;
+    if !mr_resp.status().is_success() {
+        anyhow::bail!("GitLab API {} - {}", mr_resp.status(), mr_resp.text().await?);
+    }
+
+    #[derive(Deserialize)]
+    struct GitLabMr {
+        iid: u64,
+        title: String,
+        description: Option<String>,
+        source_branch: String,
+        target_branch: String,
+        author: GitLabUser,
+    }
+    #[derive(Deserialize)]
+    struct GitLabUser {
+        username: String,
+    }
+
+    let mrs: Vec<GitLabMr> = mr_resp.json().await.context("Failed to parse MR list")?;
+
+    // Return first (most recent) open MR if any
+    let Some(mr) = mrs.into_iter().next() else {
+        return Ok(None);
+    };
+
+    // Fetch project for clone URL
+    let project_url = format!("{base_url}/api/v4/projects/{encoded_project}");
+    let proj_resp = client
+        .get(&project_url)
+        .send()
+        .await
+        .context("GitLab project request failed")?;
+    if !proj_resp.status().is_success() {
+        anyhow::bail!(
+            "GitLab API {} - {}",
+            proj_resp.status(),
+            proj_resp.text().await?
+        );
+    }
+
+    #[derive(Deserialize)]
+    struct GitLabProject {
+        http_url_to_repo: String,
+    }
+
+    let proj: GitLabProject = proj_resp.json().await.context("Failed to parse project")?;
+
+    Ok(Some(ReviewPayload {
+        gitlab_url: gitlab_url.to_string(),
+        project: project.to_string(),
+        mr_iid: mr.iid.to_string(),
+        clone_url: proj.http_url_to_repo,
+        source_branch: mr.source_branch,
+        target_branch: mr.target_branch,
+        title: mr.title,
+        description: mr.description,
+        author: mr.author.username,
+        action: "lint_fix".into(),
+        platform: "gitlab".into(),
+    }))
+}
+
 impl MergeRequestEvent {
     /// Check if this event should trigger a review.
     pub fn should_review(&self) -> bool {

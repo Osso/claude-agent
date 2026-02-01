@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 
 use crate::github::{verify_signature, PullRequestEvent};
-use crate::gitlab::{fetch_review_payload, MergeRequestEvent, PipelineEvent, ReviewPayload};
+use crate::gitlab::{fetch_mr_by_branch, fetch_review_payload, MergeRequestEvent, PipelineEvent, ReviewPayload};
 use crate::jira_token::JiraTokenManager;
 use crate::payload::SentryFixPayload;
 use crate::queue::Queue;
@@ -232,25 +232,90 @@ async fn handle_pipeline_event(
         AppError::BadRequest(format!("Invalid JSON: {e}"))
     })?;
 
+    let has_mr = event.merge_request.is_some();
     info!(
         project = %event.project.path_with_namespace,
         pipeline_id = %event.object_attributes.id,
         status = %event.object_attributes.status,
+        ref_name = %event.object_attributes.ref_name,
+        has_mr = %has_mr,
         "Received GitLab pipeline webhook"
     );
 
-    if !event.should_lint_fix() {
+    // Only process failed pipelines
+    if event.object_attributes.status != "failed" {
+        debug!(status = %event.object_attributes.status, "Pipeline not failed, ignoring");
         return Ok((
             StatusCode::OK,
             Json(WebhookResponse {
                 status: "ignored".into(),
-                message: Some("Pipeline event does not require lint fix".into()),
+                message: Some(format!(
+                    "Pipeline status is '{}', not 'failed'",
+                    event.object_attributes.status
+                )),
                 job_id: None,
             }),
         ));
     }
 
-    let payload = ReviewPayload::from(&event);
+    // Get payload - either from webhook MR data or by looking up MR by branch
+    let payload = if event.merge_request.is_some() {
+        // MR data in webhook (rare but handle it)
+        ReviewPayload::from(&event)
+    } else {
+        // Look up MR by branch name
+        let gitlab_url = event
+            .project
+            .web_url
+            .split('/')
+            .take(3)
+            .collect::<Vec<_>>()
+            .join("/");
+
+        match fetch_mr_by_branch(
+            &gitlab_url,
+            &event.project.path_with_namespace,
+            &event.object_attributes.ref_name,
+            &state.gitlab_token,
+        )
+        .await
+        {
+            Ok(Some(mut payload)) => {
+                payload.action = "lint_fix".into();
+                payload.author = event.user.username.clone();
+                payload
+            }
+            Ok(None) => {
+                debug!(
+                    branch = %event.object_attributes.ref_name,
+                    "No open MR found for branch"
+                );
+                return Ok((
+                    StatusCode::OK,
+                    Json(WebhookResponse {
+                        status: "ignored".into(),
+                        message: Some(format!(
+                            "No open MR found for branch '{}'",
+                            event.object_attributes.ref_name
+                        )),
+                        job_id: None,
+                    }),
+                ));
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to look up MR by branch");
+                return Ok((
+                    StatusCode::OK,
+                    Json(WebhookResponse {
+                        status: "ignored".into(),
+                        message: Some(format!("Failed to look up MR: {e}")),
+                        job_id: None,
+                    }),
+                ));
+            }
+        }
+    };
+
     let job_id = state.queue.push(payload).await.map_err(AppError::Redis)?;
 
     info!(job_id = %job_id, "Queued lint-fix job");
