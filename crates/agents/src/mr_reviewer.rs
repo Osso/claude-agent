@@ -58,8 +58,9 @@ gitlab mr comment <MR_IID> -m "Your review comment in markdown" -p <PROJECT>
 
 ## Review Process
 
-1. Analyze the diff carefully
-2. If needed, read full files for context using the Read tool
+1. **Check for project guidelines**: If `.claude/review.md` exists in the repo, read it first and follow those project-specific guidelines.
+2. Analyze the diff carefully
+3. If needed, read full files for context using the Read tool
 3. Post inline comments for specific issues, and a general comment for overall observations
 
 If the MR looks good and has no significant issues, approve it:
@@ -155,8 +156,9 @@ github pr comment <REPO> <PR_NUMBER> -m "Your review comment in markdown"
 
 ## Review Process
 
-1. Analyze the diff carefully
-2. If needed, read full files for context using the Read tool
+1. **Check for project guidelines**: If `.claude/review.md` exists in the repo, read it first and follow those project-specific guidelines.
+2. Analyze the diff carefully
+3. If needed, read full files for context using the Read tool
 3. Post inline comments for specific issues, and a general comment for overall observations
 
 If the PR looks good and has no significant issues, approve it:
