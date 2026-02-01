@@ -146,6 +146,17 @@ enum Commands {
         issue: String,
     },
 
+    /// Trigger a Jira ticket fix job
+    JiraFix {
+        /// Jira issue key (e.g., "GC-123")
+        #[arg(long, short)]
+        issue: String,
+
+        /// Jira base URL (defaults to globalcomix)
+        #[arg(long, default_value = "https://globalcomix.atlassian.net")]
+        jira_url: String,
+    },
+
     /// Show queue statistics
     Stats,
 
@@ -318,6 +329,18 @@ async fn main() -> Result<()> {
             }
         }
 
+        Commands::JiraFix { issue, jira_url } => {
+            match api_queue_jira_fix(&server_url, &api_key, &issue, &jira_url).await? {
+                JiraFixResult::Queued(id) => {
+                    println!("Queued Jira fix for {}", issue);
+                    println!("Job ID: {id}");
+                }
+                JiraFixResult::Skipped(msg) => {
+                    println!("Skipped: {msg}");
+                }
+            }
+        }
+
         Commands::Stats => {
             api_stats(&server_url, &api_key).await?;
         }
@@ -354,6 +377,11 @@ fn print_failed_item(item: &FailedItem) {
             println!("  Project:  {}", p.vcs_project);
             println!("  Issue:    {}", p.short_id);
             println!("  Title:    {}", p.title);
+        }
+        JobPayload::JiraTicket(p) => {
+            println!("  Project:  {}", p.vcs_project);
+            println!("  Issue:    {}", p.issue_key);
+            println!("  Summary:  {}", p.summary);
         }
     }
 
@@ -899,6 +927,55 @@ async fn api_queue_sentry_fix(
             .as_str()
             .context("Missing job_id in response")?;
         Ok(SentryFixResult::Queued(job_id.to_string()))
+    }
+}
+
+/// Result of queuing a Jira fix.
+enum JiraFixResult {
+    Queued(String),
+    Skipped(String),
+}
+
+/// Queue a Jira fix via HTTP API.
+async fn api_queue_jira_fix(
+    server_url: &str,
+    api_key: &str,
+    issue_key: &str,
+    jira_url: &str,
+) -> Result<JiraFixResult> {
+    let client = create_api_client(api_key)?;
+    let url = format!("{}/api/jira-fix", server_url.trim_end_matches('/'));
+
+    let body = serde_json::json!({
+        "issue_key": issue_key,
+        "jira_url": jira_url,
+    });
+
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .context("Failed to queue Jira fix")?;
+
+    if !resp.status().is_success() {
+        bail!("API error: {} - {}", resp.status(), resp.text().await?);
+    }
+
+    let result: serde_json::Value = resp
+        .json()
+        .await
+        .context("Failed to parse queue response")?;
+
+    let status = result["status"].as_str().unwrap_or("");
+    if status == "skipped" {
+        let message = result["message"].as_str().unwrap_or("Already exists");
+        Ok(JiraFixResult::Skipped(message.to_string()))
+    } else {
+        let job_id = result["job_id"]
+            .as_str()
+            .context("Missing job_id in response")?;
+        Ok(JiraFixResult::Queued(job_id.to_string()))
     }
 }
 

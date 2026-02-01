@@ -13,12 +13,12 @@ use base64::Engine;
 use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
-use claude_agent_agents::{MrReviewAgent, SentryFixContext, SentryFixerAgent};
+use claude_agent_agents::{JiraHandlerAgent, JiraTicketContext, MrReviewAgent, SentryFixContext, SentryFixerAgent};
 use claude_agent_core::ReviewContext;
 use claude_agent_server::sentry_api::{extract_tags, format_stacktrace, SentryClient};
-use claude_agent_server::{JobPayload, SentryFixPayload};
+use claude_agent_server::{JiraTicketPayload, JobPayload, SentryFixPayload};
 
-const VERSION: &str = "2026.01.30.1";
+const VERSION: &str = "2026.02.01";
 
 fn main() -> Result<()> {
     let subscriber = FmtSubscriber::builder()
@@ -35,6 +35,7 @@ fn main() -> Result<()> {
     match payload {
         JobPayload::Review(review) => run_review_job(review),
         JobPayload::SentryFix(sentry) => run_sentry_fix_job(sentry),
+        JobPayload::JiraTicket(jira) => run_jira_ticket_job(jira),
     }
 }
 
@@ -210,6 +211,61 @@ fn run_sentry_fix_job(payload: SentryFixPayload) -> Result<()> {
     run_claude(&work_dir, &prompt)?;
 
     info!("Sentry fix completed");
+    Ok(())
+}
+
+/// Run a Jira ticket fix job.
+fn run_jira_ticket_job(payload: JiraTicketPayload) -> Result<()> {
+    info!(
+        issue_key = %payload.issue_key,
+        summary = %payload.summary,
+        vcs_project = %payload.vcs_project,
+        "Processing Jira ticket"
+    );
+
+    // Clone repository
+    let work_dir = PathBuf::from("/work/repo");
+    std::fs::create_dir_all(&work_dir)?;
+
+    let token = if payload.vcs_platform == "github" {
+        env::var("GITHUB_TOKEN").context("GITHUB_TOKEN not set for GitHub repo")?
+    } else {
+        env::var("GITLAB_TOKEN").context("GITLAB_TOKEN not set for GitLab repo")?
+    };
+
+    let auth_clone_url = if payload.vcs_platform == "github" {
+        inject_github_credentials(&payload.clone_url, &token)
+    } else {
+        inject_git_credentials(&payload.clone_url, &token)
+    };
+
+    // Clone target branch (not a specific MR branch)
+    clone_branch(&auth_clone_url, &payload.target_branch, &work_dir)?;
+
+    // Build context and prompt
+    let context = JiraTicketContext {
+        issue_key: payload.issue_key.clone(),
+        summary: payload.summary.clone(),
+        description: payload.description.clone(),
+        issue_type: payload.issue_type.clone(),
+        priority: payload.priority.clone(),
+        status: payload.status.clone(),
+        labels: payload.labels.clone(),
+        web_url: payload.web_url.clone(),
+        trigger_comment: payload.trigger_comment.clone(),
+        trigger_author: payload.trigger_author.clone(),
+        vcs_project: payload.vcs_project.clone(),
+        target_branch: payload.target_branch.clone(),
+        vcs_platform: payload.vcs_platform.clone(),
+    };
+
+    let agent = JiraHandlerAgent::new(context, &work_dir);
+    let prompt = agent.build_prompt();
+
+    info!(issue_key = %payload.issue_key, "Running Claude for Jira ticket");
+    run_claude(&work_dir, &prompt)?;
+
+    info!("Jira ticket fix completed");
     Ok(())
 }
 

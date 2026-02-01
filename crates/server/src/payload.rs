@@ -18,6 +18,10 @@ pub enum JobPayload {
     /// Sentry issue fix job
     #[serde(rename = "sentry_fix")]
     SentryFix(SentryFixPayload),
+
+    /// Jira ticket fix job
+    #[serde(rename = "jira_ticket")]
+    JiraTicket(JiraTicketPayload),
 }
 
 impl<'de> Deserialize<'de> for JobPayload {
@@ -37,11 +41,14 @@ impl<'de> Deserialize<'de> for JobPayload {
                 Review(ReviewPayload),
                 #[serde(rename = "sentry_fix")]
                 SentryFix(SentryFixPayload),
+                #[serde(rename = "jira_ticket")]
+                JiraTicket(JiraTicketPayload),
             }
 
             return match serde_json::from_value::<Tagged>(value) {
                 Ok(Tagged::Review(p)) => Ok(JobPayload::Review(p)),
                 Ok(Tagged::SentryFix(p)) => Ok(JobPayload::SentryFix(p)),
+                Ok(Tagged::JiraTicket(p)) => Ok(JobPayload::JiraTicket(p)),
                 Err(e) => Err(serde::de::Error::custom(e)),
             };
         }
@@ -59,6 +66,7 @@ impl JobPayload {
         match self {
             JobPayload::Review(p) => format!("review {}!{}", p.project, p.mr_iid),
             JobPayload::SentryFix(p) => format!("sentry-fix {}", p.short_id),
+            JobPayload::JiraTicket(p) => format!("jira-fix {}", p.issue_key),
         }
     }
 
@@ -68,6 +76,7 @@ impl JobPayload {
         match self {
             JobPayload::Review(p) => &p.project,
             JobPayload::SentryFix(p) => &p.vcs_project,
+            JobPayload::JiraTicket(p) => &p.vcs_project,
         }
     }
 
@@ -76,6 +85,7 @@ impl JobPayload {
         match self {
             JobPayload::Review(p) => &p.mr_iid,
             JobPayload::SentryFix(p) => &p.short_id,
+            JobPayload::JiraTicket(p) => &p.issue_key,
         }
     }
 
@@ -84,6 +94,7 @@ impl JobPayload {
         match self {
             JobPayload::Review(_) => "claude-review",
             JobPayload::SentryFix(_) => "claude-sentry",
+            JobPayload::JiraTicket(_) => "claude-jira",
         }
     }
 }
@@ -121,6 +132,43 @@ pub struct SentryFixPayload {
     pub vcs_project: String,
 }
 
+/// Payload for Jira ticket fix jobs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JiraTicketPayload {
+    /// Jira issue key (e.g., "GC-123")
+    pub issue_key: String,
+    /// Jira issue ID (numeric)
+    pub issue_id: String,
+    /// Issue summary/title
+    pub summary: String,
+    /// Issue description (plain text)
+    pub description: Option<String>,
+    /// Issue type (e.g., "Bug", "Task", "Story")
+    pub issue_type: String,
+    /// Priority (e.g., "High", "Medium", "Low")
+    pub priority: Option<String>,
+    /// Current status
+    pub status: String,
+    /// Labels on the issue
+    pub labels: Vec<String>,
+    /// Web URL to the Jira issue
+    pub web_url: String,
+    /// Jira base URL (e.g., "https://globalcomix.atlassian.net")
+    pub jira_base_url: String,
+    /// The comment that triggered this job (with @claude-agent mention)
+    pub trigger_comment: String,
+    /// Author of the trigger comment
+    pub trigger_author: Option<String>,
+    /// Git clone URL
+    pub clone_url: String,
+    /// Target branch to base fix on (main/master)
+    pub target_branch: String,
+    /// VCS platform: "gitlab" or "github"
+    pub vcs_platform: String,
+    /// VCS project path (e.g., "Globalcomix/gc")
+    pub vcs_project: String,
+}
+
 // Allow conversion from ReviewPayload for backwards compatibility
 impl From<ReviewPayload> for JobPayload {
     fn from(payload: ReviewPayload) -> Self {
@@ -131,6 +179,12 @@ impl From<ReviewPayload> for JobPayload {
 impl From<SentryFixPayload> for JobPayload {
     fn from(payload: SentryFixPayload) -> Self {
         JobPayload::SentryFix(payload)
+    }
+}
+
+impl From<JiraTicketPayload> for JobPayload {
+    fn from(payload: JiraTicketPayload) -> Self {
+        JobPayload::JiraTicket(payload)
     }
 }
 

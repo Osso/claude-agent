@@ -32,6 +32,7 @@ claude-agent info -p Globalcomix/gc -m <iid> --token "$TOKEN"  # Show MR info
 claude-agent review -p Globalcomix/gc -m <iid> --token "$TOKEN"  # Queue review
 claude-agent lint-fix -p Globalcomix/gc -m <iid>                # Queue lint-fix job
 claude-agent sentry-fix -o <org> -p <project> -i <issue>        # Queue Sentry fix
+claude-agent jira-fix -i <issue-key>                            # Queue Jira fix (e.g., GC-123)
 claude-agent stats                            # Queue statistics
 claude-agent list-failed                      # List failed items
 claude-agent jobs [-a]                        # List K8s jobs
@@ -42,7 +43,7 @@ claude-agent retry <id>                       # Retry failed item
 ## Architecture
 
 ```
-GitLab/GitHub/Sentry Webhook → Server → Redis Queue → Scheduler → K8s Job (Worker)
+GitLab/GitHub/Sentry/Jira Webhook → Server → Redis Queue → Scheduler → K8s Job (Worker)
                                                                         ↓
                                                                    Claude Code CLI
                                                                         ↓
@@ -64,9 +65,11 @@ GitLab/GitHub/Sentry Webhook → Server → Redis Queue → Scheduler → K8s Jo
 
 - `crates/agents/src/mr_reviewer.rs` - MR review system prompt and tool definitions
 - `crates/agents/src/sentry_fixer.rs` - Sentry fix system prompt
+- `crates/agents/src/jira_handler.rs` - Jira ticket handler system prompt
 - `crates/server/src/scheduler.rs` - K8s Job spawning logic
 - `crates/server/src/gitlab.rs` - GitLab webhook event parsing
 - `crates/server/src/sentry.rs` - Sentry webhook event parsing
+- `crates/server/src/jira.rs` - Jira webhook event parsing
 - `crates/server/src/sentry_api.rs` - Sentry API client
 - `crates/server/src/jira_token.rs` - Jira OAuth token manager with K8s secret persistence
 - `k8s/network-policy.yaml` - Network isolation rules
@@ -90,6 +93,8 @@ GitLab/GitHub/Sentry Webhook → Server → Redis Queue → Scheduler → K8s Jo
 | `JIRA_CLIENT_ID` | Jira OAuth client ID | Server (optional) |
 | `JIRA_CLIENT_SECRET` | Jira OAuth client secret | Server (optional) |
 | `JIRA_REFRESH_TOKEN` | Initial Jira refresh token (bootstrap) | Server (optional) |
+| `JIRA_WEBHOOK_SECRET` | Jira webhook HMAC secret | Server (optional) |
+| `JIRA_PROJECT_MAPPINGS` | JSON array mapping Jira projects to repos | Server (optional) |
 | `JIRA_ACCESS_TOKEN` | Jira API access token | Worker (set by scheduler) |
 
 ### Sentry Project Mappings
@@ -107,6 +112,29 @@ The `SENTRY_PROJECT_MAPPINGS` environment variable is a JSON array mapping Sentr
   }
 ]
 ```
+
+### Jira Project Mappings
+
+The `JIRA_PROJECT_MAPPINGS` environment variable is a JSON array mapping Jira projects to VCS repositories:
+
+```json
+[
+  {
+    "jira_project": "GC",
+    "clone_url": "https://gitlab.com/Globalcomix/gc.git",
+    "vcs_platform": "gitlab",
+    "vcs_project": "Globalcomix/gc",
+    "target_branch": "master"
+  }
+]
+```
+
+When a comment containing `@claude-agent` is added to a Jira ticket, the webhook triggers a fix job that:
+1. Clones the mapped repository
+2. Analyzes the ticket (summary, description, trigger comment)
+3. Implements a fix based on the ticket requirements
+4. Creates a branch `jira-fix/<issue-key-lowercase>` and pushes
+5. Creates an MR/PR linking back to the Jira ticket
 
 ### CLI Configuration
 

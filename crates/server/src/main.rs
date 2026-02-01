@@ -15,6 +15,7 @@ use tracing_subscriber::EnvFilter;
 
 mod github;
 mod gitlab;
+mod jira;
 mod jira_token;
 mod payload;
 mod queue;
@@ -23,10 +24,11 @@ mod sentry;
 mod sentry_api;
 mod webhook;
 
+use jira::JiraProjectMapping;
 use jira_token::JiraTokenManager;
 use queue::Queue;
 use scheduler::Scheduler;
-use sentry::SentryProjectMapping;
+use sentry::SentryProjectMapping as SentryMapping;
 use webhook::{router, AppState};
 
 #[tokio::main]
@@ -41,7 +43,7 @@ async fn main() -> Result<()> {
         .with_target(false)
         .init();
 
-    const VERSION: &str = "2026.01.30.1";
+    const VERSION: &str = "2026.02.01";
     info!(version = VERSION, "Claude Agent Server starting");
 
     // Get configuration from environment
@@ -61,6 +63,8 @@ async fn main() -> Result<()> {
     let jira_client_id = env::var("JIRA_CLIENT_ID").ok();
     let jira_client_secret = env::var("JIRA_CLIENT_SECRET").ok();
     let jira_refresh_token = env::var("JIRA_REFRESH_TOKEN").ok();
+    let jira_webhook_secret = env::var("JIRA_WEBHOOK_SECRET").ok();
+    let jira_project_mappings = parse_jira_mappings();
 
     // Initialize queue
     let queue = Queue::new(&redis_url)
@@ -111,6 +115,8 @@ async fn main() -> Result<()> {
         sentry_organization,
         sentry_project_mappings,
         jira_token_manager: jira_token_manager.clone(),
+        jira_webhook_secret,
+        jira_project_mappings,
     };
 
     // Build router
@@ -174,10 +180,21 @@ async fn shutdown_signal(scheduler: Arc<Scheduler>) {
 }
 
 /// Parse Sentry project mappings from SENTRY_PROJECT_MAPPINGS env var.
-fn parse_sentry_mappings() -> Vec<SentryProjectMapping> {
+fn parse_sentry_mappings() -> Vec<SentryMapping> {
     match env::var("SENTRY_PROJECT_MAPPINGS") {
         Ok(json) => sentry::parse_project_mappings(&json).unwrap_or_else(|e| {
             tracing::warn!(error = %e, "Failed to parse SENTRY_PROJECT_MAPPINGS");
+            Vec::new()
+        }),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Parse Jira project mappings from JIRA_PROJECT_MAPPINGS env var.
+fn parse_jira_mappings() -> Vec<JiraProjectMapping> {
+    match env::var("JIRA_PROJECT_MAPPINGS") {
+        Ok(json) => jira::parse_project_mappings(&json).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to parse JIRA_PROJECT_MAPPINGS");
             Vec::new()
         }),
         Err(_) => Vec::new(),
