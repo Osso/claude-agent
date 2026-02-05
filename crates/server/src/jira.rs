@@ -9,6 +9,11 @@ use sha2::Sha256;
 /// Bot mention trigger - looks for this text in comments.
 pub const BOT_MENTION: &str = "@claude-agent";
 
+/// Jira Cloud account ID for the claude-agent bot user.
+/// When mentioned via @, Jira stores the account ID in ADF mention nodes
+/// instead of the display name.
+pub const BOT_ACCOUNT_ID: &str = "712020:8218f147-a7bd-4843-b5d3-0b2b01212bb2";
+
 /// Jira webhook event from Jira Cloud.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -156,9 +161,14 @@ impl JiraWebhookEvent {
 
 impl JiraComment {
     /// Check if comment body contains the bot mention.
+    ///
+    /// Checks both the display name (@claude-agent) and the Jira account ID,
+    /// since Jira Cloud ADF mention nodes store the account ID rather than
+    /// the display name.
     pub fn mentions_bot(&self) -> bool {
         let text = self.body_as_text();
         text.to_lowercase().contains(&BOT_MENTION.to_lowercase())
+            || text.contains(BOT_ACCOUNT_ID)
     }
 
     /// Extract plain text from comment body.
@@ -313,6 +323,31 @@ mod tests {
                     "content": [{
                         "type": "mention",
                         "attrs": {"text": "@claude-agent"}
+                    }]
+                }]
+            }),
+            author: None,
+            created: None,
+            updated: None,
+        };
+
+        assert!(comment.mentions_bot());
+    }
+
+    #[test]
+    fn test_comment_mentions_bot_by_account_id() {
+        let comment = JiraComment {
+            id: "123".into(),
+            body: serde_json::json!({
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{
+                        "type": "mention",
+                        "attrs": {
+                            "id": "712020:8218f147-a7bd-4843-b5d3-0b2b01212bb2",
+                            "text": "~accountid:712020:8218f147-a7bd-4843-b5d3-0b2b01212bb2"
+                        }
                     }]
                 }]
             }),
