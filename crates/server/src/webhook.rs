@@ -356,6 +356,20 @@ async fn handle_note_event(
         "Received GitLab note webhook"
     );
 
+    // Skip comments posted by the bot itself
+    // GitLab access token bots have usernames like "group_<id>_bot_<hash>" or "project_<id>_bot_<hash>"
+    if event.user.username.contains("_bot_") {
+        debug!(user = %event.user.username, "Ignoring note from bot user");
+        return Ok((
+            StatusCode::OK,
+            Json(WebhookResponse {
+                status: "ignored".into(),
+                message: Some("Note from bot user".into()),
+                job_id: None,
+            }),
+        ));
+    }
+
     // Only handle MR comments that mention @claude-agent
     if !event.is_merge_request_note() {
         debug!("Note is not on a merge request");
