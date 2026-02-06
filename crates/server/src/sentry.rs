@@ -116,10 +116,10 @@ impl SentryWebhookEvent {
 ///
 /// Sentry uses the format: `sha256=<hex-signature>`
 pub fn verify_signature(secret: &str, body: &[u8], signature: &str) -> bool {
-    let sig_hex = match signature.strip_prefix("sha256=") {
-        Some(hex) => hex,
-        None => return false,
-    };
+    // Sentry sends raw hex digest (no prefix), but accept sha256= prefix too
+    let sig_hex = signature
+        .strip_prefix("sha256=")
+        .unwrap_or(signature);
 
     let expected = match hex::decode(sig_hex) {
         Ok(bytes) => bytes,
@@ -247,13 +247,26 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_signature_valid_no_prefix() {
+        let secret = "test-secret";
+        let body = b"hello world";
+
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body);
+        let result = mac.finalize();
+        let sig = hex::encode(result.into_bytes());
+
+        assert!(verify_signature(secret, body, &sig));
+    }
+
+    #[test]
     fn test_verify_signature_invalid() {
         assert!(!verify_signature("secret", b"body", "sha256=0000"));
     }
 
     #[test]
-    fn test_verify_signature_missing_prefix() {
-        assert!(!verify_signature("secret", b"body", "bad-format"));
+    fn test_verify_signature_invalid_hex() {
+        assert!(!verify_signature("secret", b"body", "not-hex-at-all"));
     }
 
     #[test]
