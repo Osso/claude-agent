@@ -23,41 +23,14 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --package claude-agent-worker && \
     cp target/release/claude-agent-worker /build/claude-agent-worker-bin
 
-# Build gitlab CLI from separate source
-FROM rust:1.92-bookworm AS gitlab-builder
-
-WORKDIR /build
-COPY --from=gitlab-cli . .
+# Build CLI tools from git
+FROM rust:1.92-bookworm AS cli-builder
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/build/target \
-    cargo build --release && \
-    cp target/release/gitlab /build/gitlab-bin
-
-# Build github CLI from separate source
-FROM rust:1.92-bookworm AS github-builder
-
-WORKDIR /build
-COPY --from=github-cli . .
-
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/build/target \
-    cargo build --release && \
-    cp target/release/github /build/github-bin
-
-# Build sentry CLI from separate source
-FROM rust:1.92-bookworm AS sentry-builder
-
-WORKDIR /build
-COPY --from=sentry-cli . .
-
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/build/target \
-    cargo build --release && \
-    cp target/release/sentry /build/sentry-bin
+    cargo install --git https://github.com/Osso/gitlab-cli --root /cli && \
+    cargo install --git https://github.com/Osso/github-cli --root /cli && \
+    cargo install --git https://github.com/Osso/sentry-cli --root /cli
 
 # Build mago PHP linter
 FROM rust:1.92-bookworm AS mago-builder
@@ -107,9 +80,9 @@ RUN groupadd -g 1000 app && \
 WORKDIR /app
 
 COPY --from=builder /build/claude-agent-worker-bin /app/claude-agent-worker
-COPY --from=gitlab-builder /build/gitlab-bin /usr/local/bin/gitlab
-COPY --from=github-builder /build/github-bin /usr/local/bin/github
-COPY --from=sentry-builder /build/sentry-bin /usr/local/bin/sentry
+COPY --from=cli-builder /cli/bin/gitlab /usr/local/bin/gitlab
+COPY --from=cli-builder /cli/bin/github /usr/local/bin/github
+COPY --from=cli-builder /cli/bin/sentry /usr/local/bin/sentry
 COPY --from=mago-builder /build/bin/mago /usr/local/bin/mago
 COPY --from=jira-builder /jira-bin /usr/local/bin/jira
 
