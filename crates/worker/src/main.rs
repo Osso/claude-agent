@@ -103,7 +103,22 @@ fn run_review_job(payload: claude_agent_server::ReviewPayload) -> Result<()> {
     let prompt = if payload.action == "comment" {
         let instruction = payload.trigger_comment.as_deref().unwrap_or("review this");
         info!(instruction = %instruction, "Building comment-triggered prompt");
-        agent.build_comment_prompt(instruction)
+        let discussions = if !is_github {
+            match fetch_all_discussions(&payload, &token) {
+                Ok(d) => {
+                    info!(threads = d.len(), "Fetched discussion threads for context");
+                    let formatted = format_discussions(&d);
+                    if formatted.is_empty() { None } else { Some(formatted) }
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to fetch discussions, proceeding without context");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        agent.build_comment_prompt(instruction, discussions.as_deref())
     } else if payload.action == "lint_fix" {
         info!("Building lint-fix prompt (will fetch CI logs via gitlab CLI)");
         agent.build_lint_fix_prompt()
@@ -498,6 +513,40 @@ fn fetch_unresolved_discussions(
         .collect();
 
     Ok(unresolved)
+}
+
+/// Fetch all discussion threads for an MR (not just unresolved).
+fn fetch_all_discussions(
+    payload: &claude_agent_server::ReviewPayload,
+    token: &str,
+) -> Result<Vec<serde_json::Value>> {
+    let encoded_project = urlencoding::encode(&payload.project);
+    let gitlab_url = &payload.gitlab_url;
+    let iid = &payload.mr_iid;
+    let url = format!(
+        "{gitlab_url}/api/v4/projects/{encoded_project}/merge_requests/{iid}/discussions?per_page=100"
+    );
+
+    let headers = claude_agent_server::gitlab::gitlab_auth_headers(token)?;
+    let client = reqwest::blocking::Client::builder()
+        .default_headers(headers)
+        .build()?;
+
+    let resp = client
+        .get(&url)
+        .send()
+        .context("Failed to fetch discussions")?;
+    if !resp.status().is_success() {
+        bail!(
+            "GitLab discussions API {} - {}",
+            resp.status(),
+            resp.text().unwrap_or_default()
+        );
+    }
+
+    let discussions: Vec<serde_json::Value> =
+        resp.json().context("Failed to parse discussions")?;
+    Ok(discussions)
 }
 
 /// Format discussions into text for the prompt.

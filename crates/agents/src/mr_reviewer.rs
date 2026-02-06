@@ -520,7 +520,7 @@ impl MrReviewAgent {
     }
 
     /// Build prompt for comment-triggered jobs (@claude-agent <instruction> on MR).
-    pub fn build_comment_prompt(&self, instruction: &str) -> String {
+    pub fn build_comment_prompt(&self, instruction: &str, discussions: Option<&str>) -> String {
         let mut prompt = String::new();
         let is_github = self.context.project.contains('/') && !self.context.project.contains("gitlab");
 
@@ -567,8 +567,14 @@ impl MrReviewAgent {
         prompt.push_str(&self.context.diff);
         prompt.push_str("\n```\n\n");
 
+        if let Some(disc) = discussions {
+            prompt.push_str("## MR Discussion Threads\n\n");
+            prompt.push_str(disc);
+            prompt.push_str("\n");
+        }
+
         prompt.push_str(&format!("## User Instruction\n\n{}\n\n", instruction));
-        prompt.push_str("Carry out the user's instruction above.");
+        prompt.push_str("Carry out the user's instruction above. The discussion threads above provide context for what has been discussed on this MR.");
 
         prompt
     }
@@ -922,7 +928,7 @@ mod tests {
     #[test]
     fn test_build_comment_prompt() {
         let agent = MrReviewAgent::new(make_context(), "/tmp/repo");
-        let prompt = agent.build_comment_prompt("please fix the null check");
+        let prompt = agent.build_comment_prompt("please fix the null check", None);
 
         assert!(prompt.contains("User Instruction"));
         assert!(prompt.contains("please fix the null check"));
@@ -930,12 +936,24 @@ mod tests {
         assert!(prompt.contains("src/lib.rs"));
         assert!(prompt.contains("+ new line"));
         assert!(prompt.contains("Carry out the user's instruction"));
+        assert!(!prompt.contains("Discussion Threads"));
+    }
+
+    #[test]
+    fn test_build_comment_prompt_with_discussions() {
+        let agent = MrReviewAgent::new(make_context(), "/tmp/repo");
+        let discussions = "### Thread abc\n\n**@reviewer**: Fix the error message\n\n";
+        let prompt = agent.build_comment_prompt("update the message", Some(discussions));
+
+        assert!(prompt.contains("MR Discussion Threads"));
+        assert!(prompt.contains("Fix the error message"));
+        assert!(prompt.contains("update the message"));
     }
 
     #[test]
     fn test_build_comment_prompt_review_fallback() {
         let agent = MrReviewAgent::new(make_context(), "/tmp/repo");
-        let prompt = agent.build_comment_prompt("review this");
+        let prompt = agent.build_comment_prompt("review this", None);
 
         assert!(prompt.contains("review this"));
         assert!(prompt.contains("Diff"));
