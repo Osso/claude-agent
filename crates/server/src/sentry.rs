@@ -3,7 +3,7 @@
 #![allow(dead_code)] // Deserialization structs have unused fields
 
 use hmac::{Hmac, Mac};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -81,8 +81,53 @@ pub struct SentryProject {
 pub struct Actor {
     #[serde(rename = "type")]
     pub actor_type: String,
+    #[serde(default, deserialize_with = "deserialize_optional_string_or_int")]
     pub id: Option<String>,
     pub name: Option<String>,
+}
+
+/// Deserialize a value that can be a string, integer, or null into Option<String>.
+fn deserialize_optional_string_or_int<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de;
+
+    struct StringOrInt;
+
+    impl<'de> de::Visitor<'de> for StringOrInt {
+        type Value = Option<String>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a string, integer, or null")
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(Some(v.to_owned()))
+        }
+
+        fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+            Ok(Some(v))
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(Some(v.to_string()))
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(Some(v.to_string()))
+        }
+    }
+
+    deserializer.deserialize_any(StringOrInt)
 }
 
 impl SentryWebhookEvent {
@@ -320,5 +365,72 @@ mod tests {
         let event: SentryWebhookEvent = serde_json::from_str(json).unwrap();
         assert_eq!(event.action, "created");
         assert_eq!(event.data.issue.short_id, "WEB-123");
+    }
+
+    #[test]
+    fn test_deserialize_actor_with_integer_id() {
+        let json = r#"{
+            "action": "resolved",
+            "installation": {"uuid": "abc123"},
+            "data": {
+                "issue": {
+                    "id": "12345",
+                    "shortId": "WEB-123",
+                    "title": "Error in foo()",
+                    "culprit": "app/foo.php",
+                    "platform": "php",
+                    "status": "resolved",
+                    "firstSeen": "2025-01-01T00:00:00Z",
+                    "lastSeen": "2025-01-01T00:00:00Z",
+                    "project": {
+                        "id": "1",
+                        "slug": "web",
+                        "name": "Web"
+                    }
+                }
+            },
+            "actor": {
+                "type": "user",
+                "id": 57,
+                "name": "Alessio Deiana"
+            }
+        }"#;
+
+        let event: SentryWebhookEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.actor.id, Some("57".into()));
+        assert_eq!(event.actor.name, Some("Alessio Deiana".into()));
+    }
+
+    #[test]
+    fn test_deserialize_actor_with_string_id() {
+        let json = r#"{
+            "action": "resolved",
+            "installation": {"uuid": "abc123"},
+            "data": {
+                "issue": {
+                    "id": "12345",
+                    "shortId": "WEB-123",
+                    "title": "Error in foo()",
+                    "culprit": "app/foo.php",
+                    "platform": "php",
+                    "status": "resolved",
+                    "firstSeen": "2025-01-01T00:00:00Z",
+                    "lastSeen": "2025-01-01T00:00:00Z",
+                    "project": {
+                        "id": "1",
+                        "slug": "web",
+                        "name": "Web"
+                    }
+                }
+            },
+            "actor": {
+                "type": "user",
+                "id": "57",
+                "name": "Alessio Deiana"
+            }
+        }"#;
+
+        let event: SentryWebhookEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.actor.id, Some("57".into()));
     }
 }
