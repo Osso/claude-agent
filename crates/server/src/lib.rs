@@ -11,7 +11,7 @@ pub mod sentry;
 pub mod sentry_api;
 pub mod webhook;
 
-pub use gitlab::{gitlab_auth_headers, MergeRequestEvent, ReviewPayload};
+pub use gitlab::{gitlab_auth_headers, MergeRequestEvent, NoteEvent, ReviewPayload};
 pub use jira::{JiraProjectMapping, JiraWebhookEvent};
 pub use jira_token::JiraTokenManager;
 pub use payload::{JiraTicketPayload, JobPayload, SentryFixPayload};

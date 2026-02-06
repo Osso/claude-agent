@@ -24,8 +24,6 @@ pub struct JiraWebhookEvent {
     pub issue: JiraIssue,
     /// Comment data (present for comment events)
     pub comment: Option<JiraComment>,
-    /// User who triggered the event
-    pub user: Option<JiraUser>,
 }
 
 /// Jira issue data.
@@ -58,10 +56,6 @@ pub struct JiraIssueFields {
     pub priority: Option<JiraPriority>,
     /// Status
     pub status: Option<JiraStatus>,
-    /// Reporter
-    pub reporter: Option<JiraUser>,
-    /// Assignee
-    pub assignee: Option<JiraUser>,
     /// Labels
     #[serde(default)]
     pub labels: Vec<String>,
@@ -77,7 +71,6 @@ pub struct JiraIssueType {
 #[derive(Debug, Clone, Deserialize)]
 pub struct JiraProject {
     pub key: String,
-    pub name: String,
 }
 
 /// Jira priority.
@@ -95,28 +88,18 @@ pub struct JiraStatus {
 /// Jira comment.
 #[derive(Debug, Clone, Deserialize)]
 pub struct JiraComment {
-    /// Comment ID
-    pub id: String,
     /// Comment body (Atlassian Document Format in Cloud, or plain text)
     pub body: serde_json::Value,
     /// Author of the comment
     pub author: Option<JiraUser>,
-    /// When the comment was created
-    pub created: Option<String>,
-    /// When the comment was updated
-    pub updated: Option<String>,
 }
 
 /// Jira user.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JiraUser {
-    /// Account ID (Jira Cloud)
-    pub account_id: Option<String>,
     /// Display name
     pub display_name: Option<String>,
-    /// Email address (if available)
-    pub email_address: Option<String>,
 }
 
 impl JiraWebhookEvent {
@@ -315,7 +298,6 @@ mod tests {
     #[test]
     fn test_comment_mentions_bot() {
         let comment = JiraComment {
-            id: "123".into(),
             body: serde_json::json!({
                 "type": "doc",
                 "content": [{
@@ -327,8 +309,6 @@ mod tests {
                 }]
             }),
             author: None,
-            created: None,
-            updated: None,
         };
 
         assert!(comment.mentions_bot());
@@ -337,7 +317,6 @@ mod tests {
     #[test]
     fn test_comment_mentions_bot_by_account_id() {
         let comment = JiraComment {
-            id: "123".into(),
             body: serde_json::json!({
                 "type": "doc",
                 "content": [{
@@ -352,8 +331,6 @@ mod tests {
                 }]
             }),
             author: None,
-            created: None,
-            updated: None,
         };
 
         assert!(comment.mentions_bot());
@@ -362,7 +339,6 @@ mod tests {
     #[test]
     fn test_comment_no_mention() {
         let comment = JiraComment {
-            id: "123".into(),
             body: serde_json::json!({
                 "type": "doc",
                 "content": [{
@@ -374,8 +350,6 @@ mod tests {
                 }]
             }),
             author: None,
-            created: None,
-            updated: None,
         };
 
         assert!(!comment.mentions_bot());
@@ -396,19 +370,13 @@ mod tests {
                     project: None,
                     priority: None,
                     status: None,
-                    reporter: None,
-                    assignee: None,
                     labels: vec![],
                 },
             },
             comment: Some(JiraComment {
-                id: "456".into(),
                 body: serde_json::json!("@claude-agent fix this"),
                 author: None,
-                created: None,
-                updated: None,
             }),
-            user: None,
         };
 
         assert!(event.should_trigger());
@@ -429,19 +397,13 @@ mod tests {
                     project: None,
                     priority: None,
                     status: None,
-                    reporter: None,
-                    assignee: None,
                     labels: vec![],
                 },
             },
             comment: Some(JiraComment {
-                id: "456".into(),
                 body: serde_json::json!("Just a comment"),
                 author: None,
-                created: None,
-                updated: None,
             }),
-            user: None,
         };
 
         assert!(!event.should_trigger());
@@ -462,13 +424,10 @@ mod tests {
                     project: None,
                     priority: None,
                     status: None,
-                    reporter: None,
-                    assignee: None,
                     labels: vec![],
                 },
             },
             comment: None,
-            user: None,
         };
 
         assert!(!event.should_trigger());
@@ -489,13 +448,10 @@ mod tests {
                     project: None,
                     priority: None,
                     status: None,
-                    reporter: None,
-                    assignee: None,
                     labels: vec![],
                 },
             },
             comment: None,
-            user: None,
         };
 
         assert_eq!(

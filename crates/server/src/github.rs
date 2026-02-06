@@ -105,6 +105,7 @@ impl From<&PullRequestEvent> for ReviewPayload {
             author: event.pull_request.user.login.clone(),
             action: event.review_action().to_string(),
             platform: "github".into(),
+            trigger_comment: None,
         }
     }
 }

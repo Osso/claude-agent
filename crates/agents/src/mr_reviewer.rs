@@ -254,6 +254,55 @@ pub const LINT_FIX_SYSTEM_PROMPT: &str = r#"You are a code fixer. A CI pipeline 
 - Run commands: `git add`, `git commit`, `git push`, `gitlab ci logs`, `cat`, `head`, `tail`, `grep`, `rg`, `ls`, `find`
 "#;
 
+/// System prompt for comment-triggered jobs (user writes @claude-agent <instruction> on MR).
+pub const COMMENT_SYSTEM_PROMPT: &str = r#"You are a helpful coding assistant working on a merge request. A user has tagged you in a comment with an instruction.
+
+## Your Task
+
+Interpret the user's instruction and act on it. The instruction could be anything:
+- "review this" → do a code review (same as a normal review)
+- "fix the lint errors" → fix code and commit+push
+- "explain why X was changed" → post a comment explaining
+- "add tests for the new function" → write tests and commit+push
+- Any other request related to this MR
+
+## Rules
+
+- Focus on what the user asked. Do not do extra work beyond the instruction.
+- If the instruction asks for code changes (fix, refactor, add tests, etc.), make the changes, commit, and push.
+- If the instruction asks for information (explain, review, summarize), post a comment with your response.
+- When posting comments, use `gitlab mr comment` or `github pr comment`.
+- When making code changes, commit with a descriptive message and push to the source branch.
+
+## Posting Comments (GitLab)
+
+```bash
+gitlab mr comment <MR_IID> -m "Your comment" -p <PROJECT>
+```
+
+## Posting Comments (GitHub)
+
+```bash
+github pr comment <REPO> <PR_NUMBER> -m "Your comment"
+```
+
+## Making Code Changes
+
+```bash
+git add -A
+git commit -m "description of changes"
+git push origin HEAD
+```
+
+## Available Tools
+
+- Read files with the Read tool
+- Edit files with the Edit tool
+- Run commands: `git`, `gitlab`, `github`, `cargo`, `npm`, `phpstan`, `mago`, `eslint`, `ruff`, `cat`, `head`, `tail`, `grep`, `rg`, `ls`, `find`
+
+The GITLAB_TOKEN / GITHUB_TOKEN environment variable is already configured.
+"#;
+
 /// MR Review Agent.
 pub struct MrReviewAgent {
     context: ReviewContext,
@@ -466,6 +515,60 @@ impl MrReviewAgent {
         ));
         prompt.push_str("2. Fix the errors in the changed files\n");
         prompt.push_str("3. Commit and push your fixes\n");
+
+        prompt
+    }
+
+    /// Build prompt for comment-triggered jobs (@claude-agent <instruction> on MR).
+    pub fn build_comment_prompt(&self, instruction: &str) -> String {
+        let mut prompt = String::new();
+        let is_github = self.context.project.contains('/') && !self.context.project.contains("gitlab");
+
+        // Use platform-specific comment system prompt
+        let system_prompt = if is_github {
+            COMMENT_SYSTEM_PROMPT.replace(
+                "gitlab mr comment <MR_IID> -m \"Your comment\" -p <PROJECT>",
+                &format!(
+                    "github pr comment {} {} -m \"Your comment\"",
+                    self.context.project, self.context.mr_id
+                ),
+            )
+        } else {
+            COMMENT_SYSTEM_PROMPT.to_string()
+        };
+
+        prompt.push_str(&system_prompt);
+        prompt.push_str("\n\n---\n\n");
+
+        let mr_label = if is_github { "Pull Request" } else { "Merge Request" };
+
+        prompt.push_str(&format!("## {} Details\n\n", mr_label));
+        prompt.push_str(&format!("**Project**: {}\n", self.context.project));
+        prompt.push_str(&format!("**MR IID**: {}\n", self.context.mr_id));
+        prompt.push_str(&format!("**Title**: {}\n", self.context.title));
+        prompt.push_str(&format!(
+            "**Branch**: {} → {}\n",
+            self.context.source_branch, self.context.target_branch
+        ));
+        prompt.push_str(&format!("**Author**: {}\n", self.context.author));
+
+        if let Some(desc) = &self.context.description {
+            if !desc.is_empty() {
+                prompt.push_str(&format!("\n**Description**:\n{}\n", desc));
+            }
+        }
+
+        prompt.push_str("\n## Changed Files\n\n");
+        for file in &self.context.changed_files {
+            prompt.push_str(&format!("- `{}`\n", file));
+        }
+
+        prompt.push_str("\n## Diff\n\n```diff\n");
+        prompt.push_str(&self.context.diff);
+        prompt.push_str("\n```\n\n");
+
+        prompt.push_str(&format!("## User Instruction\n\n{}\n\n", instruction));
+        prompt.push_str("Carry out the user's instruction above.");
 
         prompt
     }
@@ -814,5 +917,27 @@ mod tests {
         assert!(prompt.contains("Unresolved Discussion Threads"));
         assert!(prompt.contains("**@rev**: Issue"));
         assert!(prompt.contains("gitlab mr reply"));
+    }
+
+    #[test]
+    fn test_build_comment_prompt() {
+        let agent = MrReviewAgent::new(make_context(), "/tmp/repo");
+        let prompt = agent.build_comment_prompt("please fix the null check");
+
+        assert!(prompt.contains("User Instruction"));
+        assert!(prompt.contains("please fix the null check"));
+        assert!(prompt.contains("Test MR"));
+        assert!(prompt.contains("src/lib.rs"));
+        assert!(prompt.contains("+ new line"));
+        assert!(prompt.contains("Carry out the user's instruction"));
+    }
+
+    #[test]
+    fn test_build_comment_prompt_review_fallback() {
+        let agent = MrReviewAgent::new(make_context(), "/tmp/repo");
+        let prompt = agent.build_comment_prompt("review this");
+
+        assert!(prompt.contains("review this"));
+        assert!(prompt.contains("Diff"));
     }
 }

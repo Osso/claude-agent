@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 
 use crate::github::{verify_signature, PullRequestEvent};
-use crate::gitlab::{fetch_mr_by_branch, fetch_review_payload, MergeRequestEvent, PipelineEvent, ReviewPayload};
+use crate::gitlab::{fetch_mr_by_branch, fetch_review_payload, MergeRequestEvent, NoteEvent, PipelineEvent, ReviewPayload};
 use crate::jira::{self, JiraProjectMapping, JiraWebhookEvent};
 use crate::jira_token::JiraTokenManager;
 use crate::payload::{JiraTicketPayload, SentryFixPayload};
@@ -157,6 +157,7 @@ async fn gitlab_webhook_handler(
     match kind.object_kind.as_str() {
         "merge_request" => handle_merge_request_event(&state, &body).await,
         "pipeline" => handle_pipeline_event(&state, &body).await,
+        "note" => handle_note_event(&state, &body).await,
         other => {
             debug!(object_kind = other, "Ignoring unsupported GitLab event type");
             Ok((
@@ -332,6 +333,112 @@ async fn handle_pipeline_event(
         Json(WebhookResponse {
             status: "queued".into(),
             message: Some("Lint-fix job queued".into()),
+            job_id: Some(job_id),
+        }),
+    ))
+}
+
+async fn handle_note_event(
+    state: &AppState,
+    body: &[u8],
+) -> Result<(StatusCode, Json<WebhookResponse>), AppError> {
+    let event: NoteEvent = serde_json::from_slice(body).map_err(|e| {
+        if let Ok(body_str) = std::str::from_utf8(body) {
+            error!(error = %e, body = %body_str, "Failed to parse note webhook");
+        }
+        AppError::BadRequest(format!("Invalid JSON: {e}"))
+    })?;
+
+    info!(
+        project = %event.project.path_with_namespace,
+        noteable_type = %event.object_attributes.noteable_type,
+        user = %event.user.username,
+        "Received GitLab note webhook"
+    );
+
+    // Only handle MR comments that mention @claude-agent
+    if !event.is_merge_request_note() {
+        debug!("Note is not on a merge request");
+        return Ok((
+            StatusCode::OK,
+            Json(WebhookResponse {
+                status: "ignored".into(),
+                message: Some("Not a merge request note".into()),
+                job_id: None,
+            }),
+        ));
+    }
+
+    if !event.mentions_bot() {
+        debug!("Note does not mention @claude-agent");
+        return Ok((
+            StatusCode::OK,
+            Json(WebhookResponse {
+                status: "ignored".into(),
+                message: Some("No @claude-agent mention".into()),
+                job_id: None,
+            }),
+        ));
+    }
+
+    let mr = event.merge_request.as_ref().unwrap();
+
+    // Only handle open MRs
+    if mr.state != "opened" && mr.state != "reopened" {
+        debug!(state = %mr.state, "MR is not open");
+        return Ok((
+            StatusCode::OK,
+            Json(WebhookResponse {
+                status: "ignored".into(),
+                message: Some(format!("MR state is '{}', not open", mr.state)),
+                job_id: None,
+            }),
+        ));
+    }
+
+    // Fetch full MR details (note webhook doesn't include clone_url)
+    let gitlab_url = event
+        .project
+        .web_url
+        .split('/')
+        .take(3)
+        .collect::<Vec<_>>()
+        .join("/");
+
+    let mut payload = fetch_review_payload(
+        &gitlab_url,
+        &event.project.path_with_namespace,
+        mr.iid as u64,
+        &state.gitlab_token,
+    )
+    .await
+    .map_err(|e| {
+        warn!(error = %e, "Failed to fetch MR details for note event");
+        AppError::Internal(format!("Failed to fetch MR details: {e}"))
+    })?;
+
+    let instruction = event.instruction();
+    payload.action = "comment".into();
+    payload.trigger_comment = Some(if instruction.is_empty() {
+        "review this".into()
+    } else {
+        instruction.to_string()
+    });
+
+    let job_id = state.queue.push(payload).await.map_err(AppError::Redis)?;
+
+    info!(
+        job_id = %job_id,
+        mr_iid = %mr.iid,
+        instruction = %instruction,
+        "Queued comment-triggered job"
+    );
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(WebhookResponse {
+            status: "queued".into(),
+            message: Some("Comment-triggered job queued".into()),
             job_id: Some(job_id),
         }),
     ))
@@ -938,6 +1045,7 @@ async fn fetch_github_pr_payload(repo: &str, pr: u64, token: &str) -> anyhow::Re
         action: "open".to_string(),
         gitlab_url: String::new(),
         platform: "github".to_string(),
+        trigger_comment: None,
     })
 }
 

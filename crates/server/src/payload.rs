@@ -206,6 +206,7 @@ mod tests {
             author: "test".into(),
             action: "open".into(),
             platform: "gitlab".into(),
+            trigger_comment: None,
         });
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -279,6 +280,7 @@ mod tests {
             author: String::new(),
             action: String::new(),
             platform: String::new(),
+            trigger_comment: None,
         });
         assert_eq!(review.description(), "review group/repo!42");
 

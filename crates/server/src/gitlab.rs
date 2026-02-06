@@ -151,6 +151,7 @@ impl From<&PipelineEvent> for ReviewPayload {
             author: event.user.username.clone(),
             action: "lint_fix".into(),
             platform: "gitlab".into(),
+            trigger_comment: None,
         }
     }
 }
@@ -257,6 +258,7 @@ pub async fn fetch_review_payload(
         author: mr.author.username,
         action: "open".into(),
         platform: "gitlab".into(),
+        trigger_comment: None,
     })
 }
 
@@ -347,7 +349,62 @@ pub async fn fetch_mr_by_branch(
         author: mr.author.username,
         action: "lint_fix".into(),
         platform: "gitlab".into(),
+        trigger_comment: None,
     }))
+}
+
+/// GitLab Note (comment) webhook event.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NoteEvent {
+    pub object_kind: String,
+    pub user: User,
+    pub project: Project,
+    pub object_attributes: NoteAttributes,
+    pub merge_request: Option<NoteMergeRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NoteAttributes {
+    pub id: i64,
+    pub note: String,
+    pub noteable_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NoteMergeRequest {
+    pub iid: i64,
+    pub title: String,
+    pub source_branch: String,
+    pub target_branch: String,
+    pub state: String,
+    pub author_id: i64,
+}
+
+impl NoteEvent {
+    /// Check if this is a comment on a merge request.
+    pub fn is_merge_request_note(&self) -> bool {
+        self.object_attributes.noteable_type == "MergeRequest" && self.merge_request.is_some()
+    }
+
+    /// Check if the comment mentions @claude-agent (case-insensitive).
+    pub fn mentions_bot(&self) -> bool {
+        self.object_attributes
+            .note
+            .to_lowercase()
+            .contains("@claude-agent")
+    }
+
+    /// Extract the instruction text after @claude-agent.
+    pub fn instruction(&self) -> &str {
+        let note = &self.object_attributes.note;
+        // Find @claude-agent (case-insensitive) and return everything after it
+        if let Some(pos) = note.to_lowercase().find("@claude-agent") {
+            let after = &note[pos + "@claude-agent".len()..];
+            after.trim()
+        } else {
+            ""
+        }
+    }
 }
 
 impl MergeRequestEvent {
@@ -406,12 +463,15 @@ pub struct ReviewPayload {
     pub title: String,
     pub description: Option<String>,
     pub author: String,
-    /// Webhook action: "open", "reopen", "update", etc.
+    /// Webhook action: "open", "reopen", "update", "comment", "lint_fix", etc.
     #[serde(default = "default_action")]
     pub action: String,
     /// Platform: "gitlab" or "github"
     #[serde(default = "default_platform")]
     pub platform: String,
+    /// Comment that triggered the job (for action == "comment").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_comment: Option<String>,
 }
 
 fn default_action() -> String {
@@ -448,6 +508,7 @@ impl From<&MergeRequestEvent> for ReviewPayload {
                 .clone()
                 .unwrap_or_else(|| "open".into()),
             platform: "gitlab".into(),
+            trigger_comment: None,
         }
     }
 }
@@ -520,5 +581,113 @@ mod tests {
         assert_eq!(payload.project, "group/test");
         assert_eq!(payload.mr_iid, "123");
         assert_eq!(payload.gitlab_url, "https://gitlab.com");
+    }
+
+    fn make_note_event(note: &str, noteable_type: &str, mr_state: &str) -> NoteEvent {
+        NoteEvent {
+            object_kind: "note".into(),
+            user: User {
+                id: 1,
+                name: "Test".into(),
+                username: "test".into(),
+                email: None,
+            },
+            project: Project {
+                id: 1,
+                name: "test".into(),
+                path_with_namespace: "group/test".into(),
+                web_url: "https://gitlab.com/group/test".into(),
+                git_http_url: Some("https://gitlab.com/group/test.git".into()),
+                git_ssh_url: None,
+                default_branch: Some("main".into()),
+            },
+            object_attributes: NoteAttributes {
+                id: 1,
+                note: note.into(),
+                noteable_type: noteable_type.into(),
+            },
+            merge_request: Some(NoteMergeRequest {
+                iid: 123,
+                title: "Test MR".into(),
+                source_branch: "feature".into(),
+                target_branch: "main".into(),
+                state: mr_state.into(),
+                author_id: 1,
+            }),
+        }
+    }
+
+    #[test]
+    fn test_note_event_mentions_bot() {
+        let event = make_note_event("@claude-agent please review", "MergeRequest", "opened");
+        assert!(event.mentions_bot());
+    }
+
+    #[test]
+    fn test_note_event_mentions_bot_case_insensitive() {
+        let event = make_note_event("@Claude-Agent fix this", "MergeRequest", "opened");
+        assert!(event.mentions_bot());
+    }
+
+    #[test]
+    fn test_note_event_no_mention() {
+        let event = make_note_event("looks good to me", "MergeRequest", "opened");
+        assert!(!event.mentions_bot());
+    }
+
+    #[test]
+    fn test_note_event_instruction() {
+        let event = make_note_event("@claude-agent please review this MR", "MergeRequest", "opened");
+        assert_eq!(event.instruction(), "please review this MR");
+    }
+
+    #[test]
+    fn test_note_event_instruction_empty() {
+        let event = make_note_event("@claude-agent", "MergeRequest", "opened");
+        assert_eq!(event.instruction(), "");
+    }
+
+    #[test]
+    fn test_note_event_is_merge_request_note() {
+        let event = make_note_event("@claude-agent review", "MergeRequest", "opened");
+        assert!(event.is_merge_request_note());
+    }
+
+    #[test]
+    fn test_note_event_is_not_merge_request_note() {
+        let mut event = make_note_event("@claude-agent review", "Issue", "opened");
+        event.merge_request = None;
+        assert!(!event.is_merge_request_note());
+    }
+
+    #[test]
+    fn test_note_event_parse() {
+        let json = r#"{
+            "object_kind": "note",
+            "user": {"id": 1, "name": "Test", "username": "test", "email": null},
+            "project": {
+                "id": 1, "name": "test",
+                "path_with_namespace": "group/test",
+                "web_url": "https://gitlab.com/group/test",
+                "git_http_url": "https://gitlab.com/group/test.git"
+            },
+            "object_attributes": {
+                "id": 1,
+                "note": "@claude-agent please review this MR",
+                "noteable_type": "MergeRequest"
+            },
+            "merge_request": {
+                "iid": 123, "title": "Test MR",
+                "source_branch": "feature", "target_branch": "main",
+                "state": "opened", "author_id": 1
+            }
+        }"#;
+
+        let event: NoteEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.object_kind, "note");
+        assert!(event.mentions_bot());
+        assert_eq!(event.instruction(), "please review this MR");
+        assert!(event.is_merge_request_note());
+        assert_eq!(event.merge_request.unwrap().iid, 123);
     }
 }

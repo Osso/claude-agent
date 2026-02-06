@@ -18,7 +18,7 @@ use claude_agent_core::ReviewContext;
 use claude_agent_server::sentry_api::{extract_tags, format_stacktrace, SentryClient};
 use claude_agent_server::{JiraTicketPayload, JobPayload, SentryFixPayload};
 
-const VERSION: &str = "2026.02.05_2";
+const VERSION: &str = "2026.02.05.1";
 
 fn main() -> Result<()> {
     let subscriber = FmtSubscriber::builder()
@@ -98,10 +98,13 @@ fn run_review_job(payload: claude_agent_server::ReviewPayload) -> Result<()> {
         start_sha,
     };
 
-    let changed_files_ref = context.changed_files.clone();
     let agent = MrReviewAgent::new(context, &work_dir);
 
-    let prompt = if payload.action == "lint_fix" {
+    let prompt = if payload.action == "comment" {
+        let instruction = payload.trigger_comment.as_deref().unwrap_or("review this");
+        info!(instruction = %instruction, "Building comment-triggered prompt");
+        agent.build_comment_prompt(instruction)
+    } else if payload.action == "lint_fix" {
         info!("Building lint-fix prompt (will fetch CI logs via gitlab CLI)");
         agent.build_lint_fix_prompt()
     } else if is_github {
@@ -410,102 +413,6 @@ fn get_diff_shas(repo_dir: &PathBuf, target_branch: &str) -> Result<(String, Str
     Ok((start_sha.clone(), head_sha, start_sha))
 }
 
-/// Detect file types from changed files and run relevant linters.
-fn run_linters(repo_dir: &PathBuf, changed_files: &[String]) -> Result<String> {
-    let mut output = String::new();
-
-    let has_ext = |ext: &str| changed_files.iter().any(|f| f.ends_with(ext));
-
-    // PHP: phpstan + mago
-    if has_ext(".php") {
-        if let Ok(result) = run_linter(repo_dir, "phpstan", &["analyse", "--no-progress", "--error-format=raw"]) {
-            if !result.is_empty() {
-                output.push_str("### phpstan\n");
-                output.push_str(&result);
-                output.push('\n');
-            }
-        }
-        if let Ok(result) = run_linter(repo_dir, "mago", &["lint"]) {
-            if !result.is_empty() {
-                output.push_str("### mago\n");
-                output.push_str(&result);
-                output.push('\n');
-            }
-        }
-    }
-
-    // Rust: cargo clippy
-    if has_ext(".rs") {
-        if let Ok(result) = run_linter(repo_dir, "cargo", &["clippy", "--workspace", "--message-format=short", "--", "-D", "warnings"]) {
-            if !result.is_empty() {
-                output.push_str("### cargo clippy\n");
-                output.push_str(&result);
-                output.push('\n');
-            }
-        }
-    }
-
-    // JavaScript/TypeScript: eslint
-    if has_ext(".js") || has_ext(".ts") || has_ext(".jsx") || has_ext(".tsx") {
-        if let Ok(result) = run_linter(repo_dir, "eslint", &["."]) {
-            if !result.is_empty() {
-                output.push_str("### eslint\n");
-                output.push_str(&result);
-                output.push('\n');
-            }
-        }
-    }
-
-    // Python: ruff
-    if has_ext(".py") {
-        if let Ok(result) = run_linter(repo_dir, "ruff", &["check", "."]) {
-            if !result.is_empty() {
-                output.push_str("### ruff\n");
-                output.push_str(&result);
-                output.push('\n');
-            }
-        }
-    }
-
-    // Go: golangci-lint
-    if has_ext(".go") {
-        if let Ok(result) = run_linter(repo_dir, "golangci-lint", &["run"]) {
-            if !result.is_empty() {
-                output.push_str("### golangci-lint\n");
-                output.push_str(&result);
-                output.push('\n');
-            }
-        }
-    }
-
-    Ok(output)
-}
-
-/// Run a linter command and return its combined stdout+stderr output.
-/// Returns Ok("") if the linter is not found (not installed).
-fn run_linter(repo_dir: &PathBuf, cmd: &str, args: &[&str]) -> Result<String> {
-    let output = match Command::new(cmd)
-        .args(args)
-        .current_dir(repo_dir)
-        .output()
-    {
-        Ok(o) => o,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            info!(cmd = cmd, "Linter not found, skipping");
-            return Ok(String::new());
-        }
-        Err(e) => return Err(e.into()),
-    };
-
-    let mut result = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !stderr.is_empty() {
-        result.push_str(&stderr);
-    }
-
-    // Linters exit non-zero when they find issues — that's expected
-    Ok(result)
-}
 
 fn get_diff(repo_dir: &PathBuf, target_branch: &str) -> Result<String> {
     let output = Command::new("git")
