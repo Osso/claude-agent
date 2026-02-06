@@ -93,6 +93,12 @@ gh pr create --title "<TYPE>: <ISSUE_KEY> - <brief description>" \
 - Preserve existing code style and patterns.
 - Write clear commit messages that explain the "why" not just the "what".
 
+## Do NOT Do
+
+- **Do NOT create or modify database migrations.** Migrations must be created by a human. If the ticket requires a migration, exit with a message explaining what migration is needed.
+- **Do NOT modify infrastructure files** (Dockerfiles, CI/CD configs, Kubernetes manifests, deployment scripts).
+- **Do NOT change environment variables or secrets.**
+
 ## Available Tools
 
 - Read files with the Read tool

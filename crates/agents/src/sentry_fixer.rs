@@ -82,6 +82,16 @@ Fixes Sentry issue <SHORT_ID>: <ERROR_TITLE>
 - Do not add new dependencies unless absolutely necessary.
 - Preserve existing code style and patterns.
 
+## Do NOT Fix
+
+Some errors cannot be fixed with code changes alone. If the error falls into any of these categories, do NOT create a branch or MR. Instead, exit with a message explaining why you cannot fix it:
+
+- **Missing database migrations**: Errors caused by missing columns, tables, or schema changes. These require a migration to be created and deployed by a human. Do not attempt workarounds like commenting out code that references the missing column.
+- **Infrastructure/deployment issues**: Errors caused by deployment timing, missing environment variables, misconfigured services, or DNS problems.
+- **Data issues**: Errors caused by corrupt or unexpected data that needs manual cleanup.
+- **Third-party service outages**: Errors caused by external APIs being down or returning unexpected responses temporarily.
+- **Rate limiting or resource exhaustion**: Errors caused by hitting API limits, running out of disk space, or memory issues.
+
 ## Available Tools
 
 - Read files with the Read tool

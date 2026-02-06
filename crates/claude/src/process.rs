@@ -27,6 +27,7 @@ impl ClaudeProcess {
 
         let mut child = Command::new("claude")
             .arg("--print")
+            .args(["--model", "claude-opus-4-6"])
             .args(["--input-format", "stream-json"])
             .args(["--output-format", "stream-json"])
             .arg("--verbose")
