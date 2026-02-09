@@ -8,8 +8,10 @@ use crate::event::{Event, ReviewResult};
 /// Current state of the agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum AgentState {
     /// Agent is idle, waiting for work.
+    #[default]
     Idle,
     /// Agent is running and processing.
     Running,
@@ -21,11 +23,6 @@ pub enum AgentState {
     Error,
 }
 
-impl Default for AgentState {
-    fn default() -> Self {
-        Self::Idle
-    }
-}
 
 /// Context for a merge request review.
 #[derive(Debug, Clone, Serialize, Deserialize)]

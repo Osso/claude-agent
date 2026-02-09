@@ -119,6 +119,7 @@ impl Queue {
     }
 
     /// Get queue length.
+    #[allow(clippy::len_without_is_empty)]
     pub async fn len(&self) -> Result<usize, redis::RedisError> {
         let mut conn = self.conn.clone();
         let len: usize = conn.llen(QUEUE_KEY).await?;

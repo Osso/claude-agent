@@ -270,8 +270,6 @@ pub async fn fetch_mr_by_branch(
     source_branch: &str,
     token: &str,
 ) -> Result<Option<ReviewPayload>, anyhow::Error> {
-    use anyhow::Context;
-
     let headers = gitlab_auth_headers(token)?;
     let client = reqwest::Client::builder()
         .default_headers(headers)
@@ -281,7 +279,52 @@ pub async fn fetch_mr_by_branch(
     let encoded_branch = urlencoding::encode(source_branch);
     let base_url = gitlab_url.trim_end_matches('/');
 
-    // Fetch MRs for this source branch
+    let mr = fetch_open_mr(&client, base_url, &encoded_project, &encoded_branch).await?;
+    let Some(mr) = mr else {
+        return Ok(None);
+    };
+
+    let clone_url = fetch_project_clone_url(&client, base_url, &encoded_project).await?;
+
+    Ok(Some(ReviewPayload {
+        gitlab_url: gitlab_url.to_string(),
+        project: project.to_string(),
+        mr_iid: mr.iid.to_string(),
+        clone_url,
+        source_branch: mr.source_branch,
+        target_branch: mr.target_branch,
+        title: mr.title,
+        description: mr.description,
+        author: mr.author.username,
+        action: "lint_fix".into(),
+        platform: "gitlab".into(),
+        trigger_comment: None,
+    }))
+}
+
+#[derive(Deserialize)]
+struct BranchMr {
+    iid: u64,
+    title: String,
+    description: Option<String>,
+    source_branch: String,
+    target_branch: String,
+    author: BranchMrAuthor,
+}
+
+#[derive(Deserialize)]
+struct BranchMrAuthor {
+    username: String,
+}
+
+async fn fetch_open_mr(
+    client: &reqwest::Client,
+    base_url: &str,
+    encoded_project: &str,
+    encoded_branch: &str,
+) -> Result<Option<BranchMr>, anyhow::Error> {
+    use anyhow::Context;
+
     let mr_url = format!(
         "{base_url}/api/v4/projects/{encoded_project}/merge_requests?source_branch={encoded_branch}&state=opened"
     );
@@ -294,28 +337,17 @@ pub async fn fetch_mr_by_branch(
         anyhow::bail!("GitLab API {} - {}", mr_resp.status(), mr_resp.text().await?);
     }
 
-    #[derive(Deserialize)]
-    struct GitLabMr {
-        iid: u64,
-        title: String,
-        description: Option<String>,
-        source_branch: String,
-        target_branch: String,
-        author: GitLabUser,
-    }
-    #[derive(Deserialize)]
-    struct GitLabUser {
-        username: String,
-    }
+    let mrs: Vec<BranchMr> = mr_resp.json().await.context("Failed to parse MR list")?;
+    Ok(mrs.into_iter().next())
+}
 
-    let mrs: Vec<GitLabMr> = mr_resp.json().await.context("Failed to parse MR list")?;
+async fn fetch_project_clone_url(
+    client: &reqwest::Client,
+    base_url: &str,
+    encoded_project: &str,
+) -> Result<String, anyhow::Error> {
+    use anyhow::Context;
 
-    // Return first (most recent) open MR if any
-    let Some(mr) = mrs.into_iter().next() else {
-        return Ok(None);
-    };
-
-    // Fetch project for clone URL
     let project_url = format!("{base_url}/api/v4/projects/{encoded_project}");
     let proj_resp = client
         .get(&project_url)
@@ -336,21 +368,7 @@ pub async fn fetch_mr_by_branch(
     }
 
     let proj: GitLabProject = proj_resp.json().await.context("Failed to parse project")?;
-
-    Ok(Some(ReviewPayload {
-        gitlab_url: gitlab_url.to_string(),
-        project: project.to_string(),
-        mr_iid: mr.iid.to_string(),
-        clone_url: proj.http_url_to_repo,
-        source_branch: mr.source_branch,
-        target_branch: mr.target_branch,
-        title: mr.title,
-        description: mr.description,
-        author: mr.author.username,
-        action: "lint_fix".into(),
-        platform: "gitlab".into(),
-        trigger_comment: None,
-    }))
+    Ok(proj.http_url_to_repo)
 }
 
 /// GitLab Note (comment) webhook event.
@@ -428,10 +446,7 @@ impl MergeRequestEvent {
         }
 
         // Review on: open, update, reopen
-        match attrs.action.as_deref() {
-            Some("open") | Some("update") | Some("reopen") => true,
-            _ => false,
-        }
+        matches!(attrs.action.as_deref(), Some("open") | Some("update") | Some("reopen"))
     }
 
     /// Check if MR has a specific label.

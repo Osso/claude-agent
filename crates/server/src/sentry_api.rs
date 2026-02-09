@@ -131,49 +131,49 @@ pub fn format_stacktrace(event: &Value) -> String {
     // Try to find exception info
     if let Some(entries) = event["entries"].as_array() {
         for entry in entries {
-            if entry["type"].as_str() == Some("exception") {
-                if let Some(values) = entry["data"]["values"].as_array() {
-                    for exc in values {
-                        let exc_type = exc["type"].as_str().unwrap_or("Exception");
-                        let exc_value = exc["value"].as_str().unwrap_or("");
-                        output.push_str(&format!("## {} : {}\n\n", exc_type, exc_value));
+            if entry["type"].as_str() == Some("exception")
+                && let Some(values) = entry["data"]["values"].as_array()
+            {
+                for exc in values {
+                    let exc_type = exc["type"].as_str().unwrap_or("Exception");
+                    let exc_value = exc["value"].as_str().unwrap_or("");
+                    output.push_str(&format!("## {} : {}\n\n", exc_type, exc_value));
 
-                        if let Some(frames) = exc["stacktrace"]["frames"].as_array() {
-                            output.push_str("### Stacktrace (most recent last)\n\n");
-                            for frame in frames {
-                                let filename = frame["filename"].as_str().unwrap_or("?");
-                                let function = frame["function"].as_str().unwrap_or("?");
-                                let lineno = frame["lineNo"]
-                                    .as_u64()
-                                    .map(|n| n.to_string())
-                                    .unwrap_or_else(|| "?".into());
+                    if let Some(frames) = exc["stacktrace"]["frames"].as_array() {
+                        output.push_str("### Stacktrace (most recent last)\n\n");
+                        for frame in frames {
+                            let filename = frame["filename"].as_str().unwrap_or("?");
+                            let function = frame["function"].as_str().unwrap_or("?");
+                            let lineno = frame["lineNo"]
+                                .as_u64()
+                                .map(|n| n.to_string())
+                                .unwrap_or_else(|| "?".into());
 
-                                output.push_str(&format!(
-                                    "  {} in {}:{}\n",
-                                    function, filename, lineno
-                                ));
+                            output.push_str(&format!(
+                                "  {} in {}:{}\n",
+                                function, filename, lineno
+                            ));
 
-                                // Include context lines if available
-                                if let Some(context) = frame["context"].as_array() {
-                                    for line in context {
-                                        if let (Some(num), Some(code)) =
-                                            (line[0].as_u64(), line[1].as_str())
-                                        {
-                                            let marker =
-                                                if Some(num) == frame["lineNo"].as_u64() {
-                                                    ">"
-                                                } else {
-                                                    " "
-                                                };
-                                            output.push_str(&format!(
-                                                "    {} {:4} | {}\n",
-                                                marker, num, code
-                                            ));
-                                        }
+                            // Include context lines if available
+                            if let Some(context) = frame["context"].as_array() {
+                                for line in context {
+                                    if let (Some(num), Some(code)) =
+                                        (line[0].as_u64(), line[1].as_str())
+                                    {
+                                        let marker =
+                                            if Some(num) == frame["lineNo"].as_u64() {
+                                                ">"
+                                            } else {
+                                                " "
+                                            };
+                                        output.push_str(&format!(
+                                            "    {} {:4} | {}\n",
+                                            marker, num, code
+                                        ));
                                     }
                                 }
-                                output.push('\n');
                             }
+                            output.push('\n');
                         }
                     }
                 }

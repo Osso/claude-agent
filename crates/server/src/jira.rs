@@ -178,12 +178,11 @@ pub fn extract_text_from_adf(value: &serde_json::Value) -> String {
             }
 
             // Handle mention nodes - they have "attrs" with "text" for display name
-            if obj.get("type").and_then(|v| v.as_str()) == Some("mention") {
-                if let Some(attrs) = obj.get("attrs") {
-                    if let Some(mention_text) = attrs.get("text").and_then(|v| v.as_str()) {
-                        text.push_str(mention_text);
-                    }
-                }
+            if obj.get("type").and_then(|v| v.as_str()) == Some("mention")
+                && let Some(attrs) = obj.get("attrs")
+                && let Some(mention_text) = attrs.get("text").and_then(|v| v.as_str())
+            {
+                text.push_str(mention_text);
             }
 
             // Recurse into "content" array

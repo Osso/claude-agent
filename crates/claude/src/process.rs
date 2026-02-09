@@ -37,7 +37,7 @@ impl ClaudeProcess {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit()) // Let stderr pass through for debugging
             .spawn()
-            .map_err(|e| Error::Io(e))?;
+            .map_err(Error::Io)?;
 
         let stdin = child.stdin.take().ok_or_else(|| {
             Error::ClaudeApi("Failed to capture stdin".into())
@@ -57,21 +57,18 @@ impl ClaudeProcess {
     pub fn send(&mut self, content: &str) -> Result<Vec<ClaudeOutput>, Error> {
         info!(content_len = content.len(), "Sending message to Claude");
 
-        // Send input
         let input = ClaudeInput::user(content.into());
         let json = serde_json::to_string(&input)?;
         writeln!(self.stdin, "{json}")?;
         self.stdin.flush()?;
         info!("Message sent, waiting for Claude response");
 
-        // Collect output until result
         let mut outputs = Vec::new();
         let mut line = String::new();
 
         loop {
             line.clear();
             let bytes_read = self.stdout.read_line(&mut line)?;
-
             if bytes_read == 0 {
                 error!("Claude process closed stdout unexpectedly");
                 break;
@@ -83,50 +80,11 @@ impl ClaudeProcess {
             }
 
             info!(line_len = trimmed.len(), "Received line from Claude");
-
             match serde_json::from_str::<ClaudeOutput>(trimmed) {
                 Ok(output) => {
-                    // Log progress for visibility
-                    match &output {
-                        ClaudeOutput::System { subtype, .. } => {
-                            info!(subtype = %subtype, "Claude session started");
-                        }
-                        ClaudeOutput::Assistant { subtype, message } => {
-                            if let (Some(subtype), Some(msg)) = (subtype, message) {
-                                match subtype {
-                                    crate::output::AssistantSubtype::ToolUse => {
-                                        for block in &msg.content {
-                                            if let crate::output::ContentBlock::ToolUse { name, .. } = block {
-                                                info!(tool = %name, "Claude using tool");
-                                            }
-                                        }
-                                    }
-                                    crate::output::AssistantSubtype::Text => {
-                                        // Log text preview (first 100 chars)
-                                        if let Some(text) = output.text() {
-                                            let preview: String = text.chars().take(100).collect();
-                                            debug!(preview = %preview, "Claude text output");
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                        ClaudeOutput::Result { is_error, total_cost_usd, usage, .. } => {
-                            let tokens = usage.as_ref().map(|u| u.input_tokens + u.output_tokens).unwrap_or(0);
-                            info!(
-                                is_error = %is_error,
-                                cost_usd = ?total_cost_usd,
-                                total_tokens = tokens,
-                                "Claude completed"
-                            );
-                        }
-                        _ => {}
-                    }
-
+                    log_claude_output(&output);
                     let is_result = output.is_result();
                     outputs.push(output);
-
                     if is_result {
                         debug!(count = outputs.len(), "Received result, done collecting");
                         break;
@@ -134,7 +92,6 @@ impl ClaudeProcess {
                 }
                 Err(e) => {
                     error!(error = %e, line = trimmed, "Failed to parse Claude output");
-                    // Continue trying to read more lines
                 }
             }
         }
@@ -151,6 +108,53 @@ impl ClaudeProcess {
     /// Wait for the process to exit.
     pub fn wait(&mut self) -> Result<std::process::ExitStatus, Error> {
         self.child.wait().map_err(Error::Io)
+    }
+}
+
+/// Log a Claude output event for visibility.
+fn log_claude_output(output: &ClaudeOutput) {
+    match output {
+        ClaudeOutput::System { subtype, .. } => {
+            info!(subtype = %subtype, "Claude session started");
+        }
+        ClaudeOutput::Assistant { subtype, message } => {
+            if let (Some(subtype), Some(msg)) = (subtype, message) {
+                match subtype {
+                    crate::output::AssistantSubtype::ToolUse => {
+                        for block in &msg.content {
+                            if let ContentBlock::ToolUse { name, .. } = block {
+                                info!(tool = %name, "Claude using tool");
+                            }
+                        }
+                    }
+                    crate::output::AssistantSubtype::Text => {
+                        if let Some(text) = output.text() {
+                            let preview: String = text.chars().take(100).collect();
+                            debug!(preview = %preview, "Claude text output");
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ClaudeOutput::Result {
+            is_error,
+            total_cost_usd,
+            usage,
+            ..
+        } => {
+            let tokens = usage
+                .as_ref()
+                .map(|u| u.input_tokens + u.output_tokens)
+                .unwrap_or(0);
+            info!(
+                is_error = %is_error,
+                cost_usd = ?total_cost_usd,
+                total_tokens = tokens,
+                "Claude completed"
+            );
+        }
+        _ => {}
     }
 }
 
@@ -172,7 +176,7 @@ impl ClaudeBackend for ClaudeProcess {
         // Convert to ClaudeResponse
         let responses = outputs
             .into_iter()
-            .filter_map(|output| convert_output(output))
+            .filter_map(convert_output)
             .collect();
 
         Ok(responses)

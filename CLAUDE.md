@@ -96,6 +96,7 @@ GitLab/GitHub/Sentry/Jira Webhook → Server → Redis Queue → Scheduler → K
 | `JIRA_WEBHOOK_SECRET` | Jira webhook HMAC secret | Server (optional) |
 | `JIRA_PROJECT_MAPPINGS` | JSON array mapping Jira projects to repos | Server (optional) |
 | `JIRA_ACCESS_TOKEN` | Jira API access token | Worker (set by scheduler) |
+| `ALLOWED_AUTHORS` | Comma-separated usernames allowed for pipeline lint-fix jobs (empty = all) | Server (optional) |
 
 ### Sentry Project Mappings
 

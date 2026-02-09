@@ -93,7 +93,6 @@ where
         info!("Starting agent controller");
         self.state.set_running();
 
-        // Add initial user message
         let user_event = Event::message("user", initial_prompt);
         self.state.add_event(user_event.clone());
         self.stream.add_event(user_event).await;
@@ -104,10 +103,7 @@ where
             iterations += 1;
             debug!(iteration = iterations, "Agent iteration");
 
-            // Build messages from history
             let messages = self.build_messages();
-
-            // Call Claude
             let responses = match self.claude.prompt(&messages).await {
                 Ok(r) => r,
                 Err(e) => {
@@ -117,88 +113,8 @@ where
                 }
             };
 
-            // Process responses
-            for response in responses {
-                match response {
-                    ClaudeResponse::Text(text) => {
-                        let event = Event::message("assistant", &text);
-                        self.state.add_event(event.clone());
-                        self.stream.add_event(event).await;
-                    }
-
-                    ClaudeResponse::ToolUse { id: _, name, input } => {
-                        debug!(tool = %name, "Tool use requested");
-                        self.state.set_waiting();
-                        self.state.record_tool_call();
-
-                        // Parse action from tool call
-                        let action = match self.parse_action(&name, &input) {
-                            Ok(a) => a,
-                            Err(e) => {
-                                warn!(error = %e, tool = %name, "Failed to parse action");
-                                let obs = Observation::Error {
-                                    message: format!("Invalid tool call: {e}"),
-                                };
-                                let event = Event::observation(obs);
-                                self.state.add_event(event.clone());
-                                self.stream.add_event(event).await;
-                                continue;
-                            }
-                        };
-
-                        // Check for finish action
-                        if let Action::Finish { result } = action {
-                            info!("Agent finished with result");
-                            self.state.set_finished(result.clone());
-                            return Ok(result);
-                        }
-
-                        // Record action
-                        let action_event = Event::action(action.clone());
-                        self.state.add_event(action_event.clone());
-                        self.stream.add_event(action_event).await;
-
-                        // Execute action
-                        let observation = match self.executor.execute(&action).await {
-                            Ok(obs) => obs,
-                            Err(e) => {
-                                error!(error = %e, "Action execution error");
-                                Observation::Error {
-                                    message: format!("Execution error: {e}"),
-                                }
-                            }
-                        };
-
-                        // Record observation
-                        let obs_event = Event::observation(observation);
-                        self.state.add_event(obs_event.clone());
-                        self.stream.add_event(obs_event).await;
-
-                        self.state.agent_state = AgentState::Running;
-                    }
-
-                    ClaudeResponse::Result { subtype, result } => {
-                        info!(subtype = %subtype, "Claude returned result");
-                        // If we get a result without explicit Finish action,
-                        // try to parse it as a review result
-                        if let Some(result_str) = result {
-                            if let Ok(review_result) =
-                                serde_json::from_str::<ReviewResult>(&result_str)
-                            {
-                                self.state.set_finished(review_result.clone());
-                                return Ok(review_result);
-                            }
-                        }
-                        // Otherwise, keep running - Claude might send more
-                    }
-
-                    ClaudeResponse::Usage {
-                        input_tokens,
-                        output_tokens,
-                    } => {
-                        self.state.record_api_call(input_tokens + output_tokens);
-                    }
-                }
+            if let Some(result) = self.process_responses(responses).await? {
+                return Ok(result);
             }
         }
 
@@ -209,8 +125,96 @@ where
             return Err(Error::MaxIterations);
         }
 
-        // If we got here without a result, return error
         Err(Error::NoResult)
+    }
+
+    /// Process a batch of Claude responses, returning a result if the agent finished.
+    async fn process_responses(
+        &mut self,
+        responses: Vec<ClaudeResponse>,
+    ) -> Result<Option<ReviewResult>, Error> {
+        for response in responses {
+            match response {
+                ClaudeResponse::Text(text) => {
+                    let event = Event::message("assistant", &text);
+                    self.state.add_event(event.clone());
+                    self.stream.add_event(event).await;
+                }
+                ClaudeResponse::ToolUse { id: _, name, input } => {
+                    if let Some(result) = self.handle_tool_use(&name, &input).await? {
+                        return Ok(Some(result));
+                    }
+                }
+                ClaudeResponse::Result { subtype, result } => {
+                    info!(subtype = %subtype, "Claude returned result");
+                    if let Some(result_str) = result
+                        && let Ok(review_result) =
+                            serde_json::from_str::<ReviewResult>(&result_str)
+                    {
+                        self.state.set_finished(review_result.clone());
+                        return Ok(Some(review_result));
+                    }
+                }
+                ClaudeResponse::Usage {
+                    input_tokens,
+                    output_tokens,
+                } => {
+                    self.state.record_api_call(input_tokens + output_tokens);
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Handle a tool use request, returning a result if the agent finished.
+    async fn handle_tool_use(
+        &mut self,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> Result<Option<ReviewResult>, Error> {
+        debug!(tool = %name, "Tool use requested");
+        self.state.set_waiting();
+        self.state.record_tool_call();
+
+        let action = match self.parse_action(name, input) {
+            Ok(a) => a,
+            Err(e) => {
+                warn!(error = %e, tool = %name, "Failed to parse action");
+                let obs = Observation::Error {
+                    message: format!("Invalid tool call: {e}"),
+                };
+                let event = Event::observation(obs);
+                self.state.add_event(event.clone());
+                self.stream.add_event(event).await;
+                return Ok(None);
+            }
+        };
+
+        if let Action::Finish { result } = action {
+            info!("Agent finished with result");
+            self.state.set_finished(result.clone());
+            return Ok(Some(result));
+        }
+
+        let action_event = Event::action(action.clone());
+        self.state.add_event(action_event.clone());
+        self.stream.add_event(action_event).await;
+
+        let observation = match self.executor.execute(&action).await {
+            Ok(obs) => obs,
+            Err(e) => {
+                error!(error = %e, "Action execution error");
+                Observation::Error {
+                    message: format!("Execution error: {e}"),
+                }
+            }
+        };
+
+        let obs_event = Event::observation(observation);
+        self.state.add_event(obs_event.clone());
+        self.stream.add_event(obs_event).await;
+        self.state.agent_state = AgentState::Running;
+        Ok(None)
     }
 
     fn build_messages(&self) -> Vec<Message> {
