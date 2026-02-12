@@ -230,6 +230,10 @@ pub const LINT_FIX_SYSTEM_PROMPT: &str = r#"You are a code fixer. A CI pipeline 
    git push origin HEAD
    ```
 
+## Project Guidelines
+
+Before making changes, check if `.claude/mr.md` exists in the repo root. If it does, read it and follow those project-specific guidelines for code changes.
+
 ## Rules
 
 - Only fix errors reported by the linters. Do NOT refactor, improve, or change any other code.
@@ -255,6 +259,10 @@ Interpret the user's instruction and act on it. The instruction could be anythin
 - "explain why X was changed" → post a comment explaining
 - "add tests for the new function" → write tests and commit+push
 - Any other request related to this MR
+
+## Project Guidelines
+
+Before making changes, check if `.claude/mr.md` exists in the repo root. If it does, read it and follow those project-specific guidelines for code changes and MR creation.
 
 ## Rules
 

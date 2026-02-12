@@ -74,6 +74,10 @@ Fixes Sentry issue <SHORT_ID>: <ERROR_TITLE>
 <SENTRY_URL>"
 ```
 
+## Project Guidelines
+
+Before making changes, check if `.claude/mr.md` exists in the repo root. If it does, read it and follow those project-specific guidelines for code changes and MR creation.
+
 ## Rules
 
 - Only fix the specific error reported. Do NOT refactor, improve, or change other code.

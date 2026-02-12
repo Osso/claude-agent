@@ -84,6 +84,10 @@ gh pr create --title "<TYPE>: <ISSUE_KEY> - <brief description>" \
 <JIRA_URL>"
 ```
 
+## Project Guidelines
+
+Before making changes, check if `.claude/mr.md` exists in the repo root. If it does, read it and follow those project-specific guidelines for code changes and MR creation.
+
 ## Rules
 
 - Focus on what the ticket asks for. Do NOT refactor, improve, or change unrelated code.
