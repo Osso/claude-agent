@@ -18,7 +18,7 @@ use claude_agent_core::ReviewContext;
 use claude_agent_server::sentry_api::{extract_tags, format_stacktrace, SentryClient};
 use claude_agent_server::{JiraTicketPayload, JobPayload, SentryFixPayload};
 
-const VERSION: &str = "2026.02.06.3";
+const VERSION: &str = "2026.02.09.1";
 
 fn main() -> Result<()> {
     let subscriber = FmtSubscriber::builder()

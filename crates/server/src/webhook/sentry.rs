@@ -49,6 +49,7 @@ pub(super) async fn sentry_webhook_handler(
         action = %event.action,
         issue_id = %event.data.issue.short_id,
         project = %event.data.issue.project.slug,
+        level = %event.data.issue.level.as_deref().unwrap_or("unknown"),
         "Received Sentry webhook"
     );
 

@@ -81,6 +81,29 @@ Fixes Sentry issue <SHORT_ID>: <ERROR_TITLE>
 - If you cannot determine a fix, explain what investigation is needed and create an MR with your analysis.
 - Do not add new dependencies unless absolutely necessary.
 - Preserve existing code style and patterns.
+- Do NOT add self-review comments to MRs. Do not comment "LGTM" on your own MRs.
+
+## CRITICAL: Never Suppress Error Reporting
+
+**NEVER remove, skip, or conditionally suppress `log_exception_in_sentry()` calls or similar error reporting.** Removing error reporting is destructive — it makes production issues invisible.
+
+If an error is expected (e.g., user input validation, known edge cases), **downgrade its severity** instead of removing the log:
+
+```php
+// WRONG — suppresses error reporting entirely
+if (!$isExpectedError) {
+    log_exception_in_sentry($e);
+}
+
+// CORRECT — logs at info level so it's still visible but doesn't alert
+log_exception_in_sentry($e, level: $isExpectedError ? \Sentry\Severity::info() : null);
+```
+
+The `log_exception_in_sentry()` function accepts a `$level` parameter. Use `\Sentry\Severity::info()` for expected errors. This keeps errors visible in Sentry for monitoring while preventing alert noise.
+
+Similarly, never move errors from info-level lists to expected/ignored lists. If an error is already logged at info level, that's the correct handling.
+
+**Also never:** add errors to "expected errors" documentation tables as a substitute for a code fix.
 
 ## Do NOT Fix
 
@@ -225,6 +248,8 @@ mod tests {
         assert!(prompt.contains("sentry-fix/web-123"));
         assert!(prompt.contains("gitlab mr create"));
         assert!(prompt.contains("environment: production"));
+        assert!(prompt.contains("Never Suppress Error Reporting"));
+        assert!(prompt.contains("Severity::info()"));
     }
 
     #[test]

@@ -54,6 +54,8 @@ pub struct Issue {
     /// Issue category (e.g., "error", "performance")
     #[serde(rename = "issueCategory")]
     pub issue_category: Option<String>,
+    /// Issue level (e.g., "error", "warning", "info", "fatal")
+    pub level: Option<String>,
     /// First seen timestamp
     #[serde(rename = "firstSeen")]
     pub first_seen: String,
@@ -148,6 +150,14 @@ impl SentryWebhookEvent {
             }
         }
 
+        // Skip info/debug level issues — these are expected and intentionally downgraded
+        if let Some(level) = &self.data.issue.level {
+            match level.as_str() {
+                "info" | "debug" => return false,
+                _ => {}
+            }
+        }
+
         true
     }
 
@@ -207,6 +217,10 @@ mod tests {
     use super::*;
 
     fn make_event(action: &str, issue_category: Option<&str>) -> SentryWebhookEvent {
+        make_event_with_level(action, issue_category, Some("error"))
+    }
+
+    fn make_event_with_level(action: &str, issue_category: Option<&str>, level: Option<&str>) -> SentryWebhookEvent {
         SentryWebhookEvent {
             action: action.into(),
             installation: Installation {
@@ -223,6 +237,7 @@ mod tests {
                     substatus: None,
                     issue_type: Some("error".into()),
                     issue_category: issue_category.map(String::from),
+                    level: level.map(String::from),
                     first_seen: "2025-01-01T00:00:00Z".into(),
                     last_seen: "2025-01-01T00:00:00Z".into(),
                     web_url: Some("https://sentry.io/issues/12345".into()),
@@ -275,6 +290,30 @@ mod tests {
     fn test_should_not_fix_cron() {
         let event = make_event("created", Some("cron"));
         assert!(!event.should_fix());
+    }
+
+    #[test]
+    fn test_should_not_fix_info_level() {
+        let event = make_event_with_level("created", Some("error"), Some("info"));
+        assert!(!event.should_fix());
+    }
+
+    #[test]
+    fn test_should_not_fix_debug_level() {
+        let event = make_event_with_level("created", Some("error"), Some("debug"));
+        assert!(!event.should_fix());
+    }
+
+    #[test]
+    fn test_should_fix_error_level() {
+        let event = make_event_with_level("created", Some("error"), Some("error"));
+        assert!(event.should_fix());
+    }
+
+    #[test]
+    fn test_should_fix_fatal_level() {
+        let event = make_event_with_level("created", Some("error"), Some("fatal"));
+        assert!(event.should_fix());
     }
 
     #[test]
