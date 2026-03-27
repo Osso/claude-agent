@@ -31,6 +31,9 @@ pub(super) async fn github_webhook_handler(
     if !event.should_review() {
         return Ok(ignored("Event does not require review"));
     }
+    if state.ignored_repos.iter().any(|r| r.eq_ignore_ascii_case(&event.repository.full_name)) {
+        return Ok(ignored(format!("Repo {} is ignored", event.repository.full_name)));
+    }
     let payload = ReviewPayload::from(&event);
     let job_id = state.queue.push(payload).await.map_err(AppError::Redis)?;
     info!(job_id = %job_id, "Queued GitHub review job");

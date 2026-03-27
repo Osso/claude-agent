@@ -109,6 +109,7 @@ async fn build_app_state() -> Result<AppState> {
         jira_webhook_secret: env::var("JIRA_WEBHOOK_SECRET").ok(),
         jira_project_mappings: parse_jira_mappings(),
         allowed_authors,
+        ignored_repos: parse_ignored_repos(),
     })
 }
 
@@ -146,6 +147,16 @@ async fn init_jira_token_manager() -> Option<Arc<JiraTokenManager>> {
 /// Parse comma-separated ALLOWED_AUTHORS env var.
 fn parse_allowed_authors() -> Vec<String> {
     env::var("ALLOWED_AUTHORS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Parse comma-separated IGNORED_REPOS env var.
+fn parse_ignored_repos() -> Vec<String> {
+    env::var("IGNORED_REPOS")
         .unwrap_or_default()
         .split(',')
         .map(|s| s.trim().to_string())

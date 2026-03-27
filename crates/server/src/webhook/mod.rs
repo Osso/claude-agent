@@ -48,6 +48,8 @@ pub struct AppState {
     pub jira_project_mappings: Vec<JiraProjectMapping>,
     /// Allowed MR/PR authors for automatic processing (empty = allow all)
     pub allowed_authors: Vec<String>,
+    /// Repos to ignore for automatic review (e.g. "Globalcomix/gcmobileapps")
+    pub ignored_repos: Vec<String>,
 }
 
 impl AppState {
