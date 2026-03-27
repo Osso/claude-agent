@@ -2,7 +2,35 @@
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::gitlab::ReviewPayload;
+/// Payload for MR/PR review jobs (GitHub only).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewPayload {
+    pub project: String,
+    pub mr_iid: String,
+    pub clone_url: String,
+    pub source_branch: String,
+    pub target_branch: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub author: String,
+    /// Webhook action: "open", "reopen", "update", "comment", "lint_fix", etc.
+    #[serde(default = "default_action")]
+    pub action: String,
+    /// Platform: "github"
+    #[serde(default = "default_platform")]
+    pub platform: String,
+    /// Comment that triggered the job (for action == "comment").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_comment: Option<String>,
+}
+
+fn default_action() -> String {
+    "open".into()
+}
+
+fn default_platform() -> String {
+    "github".into()
+}
 
 /// Unified job payload enum supporting all job types.
 ///
@@ -11,7 +39,7 @@ use crate::gitlab::ReviewPayload;
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum JobPayload {
-    /// MR/PR review job (GitLab or GitHub)
+    /// MR/PR review job (GitHub)
     #[serde(rename = "review")]
     Review(ReviewPayload),
 
@@ -126,7 +154,7 @@ pub struct SentryFixPayload {
     pub clone_url: String,
     /// Target branch to base fix on (main/master)
     pub target_branch: String,
-    /// VCS platform: "gitlab" or "github"
+    /// VCS platform: "github"
     pub vcs_platform: String,
     /// VCS project path (e.g., "Globalcomix/gc")
     pub vcs_project: String,
@@ -163,7 +191,7 @@ pub struct JiraTicketPayload {
     pub clone_url: String,
     /// Target branch to base fix on (main/master)
     pub target_branch: String,
-    /// VCS platform: "gitlab" or "github"
+    /// VCS platform: "github"
     pub vcs_platform: String,
     /// VCS project path (e.g., "Globalcomix/gc")
     pub vcs_project: String,
@@ -195,17 +223,16 @@ mod tests {
     #[test]
     fn test_review_payload_serialization() {
         let payload = JobPayload::Review(ReviewPayload {
-            gitlab_url: "https://gitlab.com".into(),
             project: "group/repo".into(),
             mr_iid: "123".into(),
-            clone_url: "https://gitlab.com/group/repo.git".into(),
+            clone_url: "https://github.com/group/repo.git".into(),
             source_branch: "feature".into(),
             target_branch: "main".into(),
             title: "Test MR".into(),
             description: None,
             author: "test".into(),
             action: "open".into(),
-            platform: "gitlab".into(),
+            platform: "github".into(),
             trigger_comment: None,
         });
 
@@ -229,9 +256,9 @@ mod tests {
             web_url: "https://sentry.io/issues/12345".into(),
             project_slug: "globalcomix-web".into(),
             organization: "globalcomix".into(),
-            clone_url: "https://gitlab.com/Globalcomix/gc.git".into(),
+            clone_url: "https://github.com/Globalcomix/gc.git".into(),
             target_branch: "master".into(),
-            vcs_platform: "gitlab".into(),
+            vcs_platform: "github".into(),
             vcs_project: "Globalcomix/gc".into(),
         });
 
@@ -246,16 +273,15 @@ mod tests {
     fn test_legacy_review_payload_deserialization() {
         // Legacy format without "type" tag
         let json = r#"{
-            "gitlab_url": "https://gitlab.com",
             "project": "Globalcomix/gc",
             "mr_iid": "2604",
-            "clone_url": "https://gitlab.com/Globalcomix/gc.git",
+            "clone_url": "https://github.com/Globalcomix/gc.git",
             "source_branch": "feature",
             "target_branch": "master",
             "title": "Test MR",
             "author": "test",
             "action": "open",
-            "platform": "gitlab"
+            "platform": "github"
         }"#;
 
         let parsed: JobPayload = serde_json::from_str(json).unwrap();
@@ -269,7 +295,6 @@ mod tests {
     #[test]
     fn test_job_payload_description() {
         let review = JobPayload::Review(ReviewPayload {
-            gitlab_url: String::new(),
             project: "group/repo".into(),
             mr_iid: "42".into(),
             clone_url: String::new(),

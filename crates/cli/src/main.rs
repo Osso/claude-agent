@@ -24,14 +24,11 @@ const NAMESPACE: &str = "claude-agent";
 /// Config file structure (~/.config/claude-agent/config.toml)
 #[derive(Debug, Default, Deserialize)]
 struct Config {
-    /// Server URL for HTTP API access
     server_url: Option<String>,
-    /// API key for authentication
     api_key: Option<String>,
 }
 
 impl Config {
-    /// Load config from ~/.config/claude-agent/config.toml
     fn load() -> Self {
         let path = Self::config_path();
         if path.exists() {
@@ -44,7 +41,6 @@ impl Config {
         }
     }
 
-    /// Get config file path
     fn config_path() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -55,13 +51,11 @@ impl Config {
 
 #[derive(Parser)]
 #[command(name = "claude-agent")]
-#[command(about = "Claude Agent CLI for MR review management")]
+#[command(about = "Claude Agent CLI for PR review management")]
 struct Cli {
-    /// Server URL for HTTP API
     #[arg(long, env = "CLAUDE_AGENT_URL")]
     server_url: Option<String>,
 
-    /// API key for server authentication
     #[arg(long, env = "CLAUDE_AGENT_API_KEY")]
     api_key: Option<String>,
 
@@ -71,88 +65,28 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Fetch and display MR info
-    Info {
-        /// Project path (e.g., Globalcomix/gc)
-        #[arg(long, short)]
-        project: String,
-
-        /// Merge request IID
-        #[arg(long, short)]
-        mr: u64,
-
-        /// GitLab URL (defaults to gitlab.com)
-        #[arg(long, default_value = "https://gitlab.com")]
-        gitlab_url: String,
-
-        /// GitLab token (defaults to GITLAB_TOKEN env var)
-        #[arg(long, env = "GITLAB_TOKEN")]
-        token: String,
-    },
-
-    /// Trigger a review for an MR
-    Review {
-        /// Project path (e.g., Globalcomix/gc)
-        #[arg(long, short)]
-        project: String,
-
-        /// Merge request IID
-        #[arg(long, short)]
-        mr: u64,
-
-        /// GitLab URL (defaults to gitlab.com)
-        #[arg(long, default_value = "https://gitlab.com")]
-        gitlab_url: String,
-    },
-
-    /// Trigger lint-fix for an MR (reads CI linter output, fixes code, pushes)
-    LintFix {
-        /// Project path (e.g., Globalcomix/gc)
-        #[arg(long, short)]
-        project: String,
-
-        /// Merge request IID
-        #[arg(long, short)]
-        mr: u64,
-
-        /// GitLab URL (defaults to gitlab.com)
-        #[arg(long, default_value = "https://gitlab.com")]
-        gitlab_url: String,
-    },
-
     /// Trigger a review for a GitHub PR
     ReviewGithub {
-        /// Repository (e.g., owner/repo)
         #[arg(long, short)]
         repo: String,
-
-        /// Pull request number
         #[arg(long, short)]
         pr: u64,
     },
 
     /// Trigger a Sentry fix job
     SentryFix {
-        /// Sentry organization
         #[arg(long, short)]
         org: String,
-
-        /// Sentry project slug
         #[arg(long, short)]
         project: String,
-
-        /// Sentry issue ID (numeric or short ID like "WEB-123")
         #[arg(long, short)]
         issue: String,
     },
 
     /// Trigger a Jira ticket fix job
     JiraFix {
-        /// Jira issue key (e.g., "GC-123")
         #[arg(long, short)]
         issue: String,
-
-        /// Jira base URL (defaults to globalcomix)
         #[arg(long, default_value = "https://globalcomix.atlassian.net")]
         jira_url: String,
     },
@@ -162,59 +96,26 @@ enum Commands {
 
     /// List failed items in the queue
     ListFailed {
-        /// Maximum number of items to show
         #[arg(long, default_value = "10")]
         limit: usize,
     },
 
     /// Retry a failed item
-    Retry {
-        /// Job ID to retry
-        id: String,
-    },
+    Retry { id: String },
 
     /// Show logs from a running or completed review job
     Logs {
-        /// Job ID (first 8 chars of queue ID) or full job name
         job: Option<String>,
-
-        /// Follow log output (like tail -f)
         #[arg(long, short)]
         follow: bool,
-
-        /// Number of lines to show from the end
         #[arg(long, short = 'n', default_value = "100")]
         tail: i64,
     },
 
     /// List review jobs in Kubernetes
     Jobs {
-        /// Show all jobs (including completed)
         #[arg(long, short)]
         all: bool,
-    },
-
-    /// Show comments/notes on an MR
-    Notes {
-        /// Project path (e.g., Globalcomix/gc)
-        #[arg(long, short)]
-        project: String,
-
-        /// Merge request IID
-        #[arg(long, short)]
-        mr: u64,
-
-        /// GitLab URL (defaults to gitlab.com)
-        #[arg(long, default_value = "https://gitlab.com")]
-        gitlab_url: String,
-
-        /// GitLab token (defaults to GITLAB_TOKEN env var)
-        #[arg(long, env = "GITLAB_TOKEN")]
-        token: String,
-
-        /// Number of notes to show
-        #[arg(long, short = 'n', default_value = "5")]
-        limit: usize,
     },
 
     /// Check if server's configured tokens are valid
@@ -223,7 +124,6 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .with_target(false)
@@ -231,54 +131,14 @@ async fn main() -> Result<()> {
     tracing::subscriber::set_global_default(subscriber)?;
 
     let cli = Cli::parse();
-
-    // Load config file and merge with CLI args (CLI args take precedence)
     let config = Config::load();
     let server_url = cli.server_url.or(config.server_url);
     let api_key = cli.api_key.or(config.api_key);
 
-    // Handle commands that don't need the server
-    match &cli.command {
-        Commands::Info {
-            project,
-            mr,
-            gitlab_url,
-            token,
-        } => {
-            let mr_info = fetch_mr_info(gitlab_url, project, *mr, token).await?;
-            println!("MR Info:");
-            println!("  Title:         {}", mr_info.title);
-            println!("  Author:        {}", mr_info.author);
-            println!("  Source:        {}", mr_info.source_branch);
-            println!("  Target:        {}", mr_info.target_branch);
-            println!("  Clone URL:     {}", mr_info.clone_url);
-            if let Some(desc) = &mr_info.description {
-                println!("  Description:   {}", desc.lines().next().unwrap_or(""));
-            }
-            return Ok(());
-        }
-        Commands::Logs { job, follow, tail } => {
-            show_logs(job.as_deref(), *follow, *tail).await?;
-            return Ok(());
-        }
-        Commands::Jobs { all } => {
-            list_jobs(*all).await?;
-            return Ok(());
-        }
-        Commands::Notes {
-            project,
-            mr,
-            gitlab_url,
-            token,
-            limit,
-        } => {
-            show_notes(gitlab_url, project, *mr, token, *limit).await?;
-            return Ok(());
-        }
-        _ => {}
+    if handle_local_command(&cli.command).await? {
+        return Ok(());
     }
 
-    // All other commands require server URL and API key
     let server_url = server_url.context(
         "Server URL required. Set in ~/.config/claude-agent/config.toml or CLAUDE_AGENT_URL",
     )?;
@@ -286,78 +146,71 @@ async fn main() -> Result<()> {
         "API key required. Set in ~/.config/claude-agent/config.toml or CLAUDE_AGENT_API_KEY",
     )?;
 
-    match cli.command {
-        Commands::Info { .. } | Commands::Logs { .. } | Commands::Jobs { .. } | Commands::Notes { .. } => {
-            unreachable!() // Handled above
-        }
+    handle_server_command(cli.command, &server_url, &api_key).await
+}
 
-        Commands::Review {
-            project,
-            mr,
-            gitlab_url,
-        } => {
-            let id = api_queue_review(&server_url, &api_key, &project, mr, &gitlab_url, None).await?;
-            println!("Queued review for !{} in {}", mr, project);
-            println!("Job ID: {id}");
+/// Handle commands that don't need the server. Returns true if handled.
+async fn handle_local_command(command: &Commands) -> Result<bool> {
+    match command {
+        Commands::Logs { job, follow, tail } => {
+            show_logs(job.as_deref(), *follow, *tail).await?;
+            Ok(true)
         }
+        Commands::Jobs { all } => {
+            list_jobs(*all).await?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
 
-        Commands::LintFix {
-            project,
-            mr,
-            gitlab_url,
-        } => {
-            let id = api_queue_review(&server_url, &api_key, &project, mr, &gitlab_url, Some("lint_fix")).await?;
-            println!("Queued lint-fix for !{} in {}", mr, project);
-            println!("Job ID: {id}");
-        }
+/// Handle commands that require server URL and API key.
+async fn handle_server_command(command: Commands, server_url: &str, api_key: &str) -> Result<()> {
+    match command {
+        Commands::Logs { .. } | Commands::Jobs { .. } => unreachable!(),
 
         Commands::ReviewGithub { repo, pr } => {
-            let id = api_queue_github_review(&server_url, &api_key, &repo, pr, None).await?;
+            let id = api_queue_github_review(server_url, api_key, &repo, pr, None).await?;
             println!("Queued review for #{} in {}", pr, repo);
             println!("Job ID: {id}");
         }
 
         Commands::SentryFix { org, project, issue } => {
-            match api_queue_sentry_fix(&server_url, &api_key, &org, &project, &issue).await? {
-                SentryFixResult::Queued(id) => {
-                    println!("Queued Sentry fix for {} in {}/{}", issue, org, project);
-                    println!("Job ID: {id}");
-                }
-                SentryFixResult::Skipped(msg) => {
-                    println!("Skipped: {msg}");
-                }
-            }
+            handle_sentry_fix(server_url, api_key, &org, &project, &issue).await?;
         }
 
         Commands::JiraFix { issue, jira_url } => {
-            match api_queue_jira_fix(&server_url, &api_key, &issue, &jira_url).await? {
-                JiraFixResult::Queued(id) => {
-                    println!("Queued Jira fix for {}", issue);
-                    println!("Job ID: {id}");
-                }
-                JiraFixResult::Skipped(msg) => {
-                    println!("Skipped: {msg}");
-                }
-            }
+            handle_jira_fix(server_url, api_key, &issue, &jira_url).await?;
         }
 
-        Commands::Stats => {
-            api_stats(&server_url, &api_key).await?;
-        }
-
-        Commands::ListFailed { limit } => {
-            api_list_failed(&server_url, &api_key, limit).await?;
-        }
-
-        Commands::Retry { id } => {
-            api_retry(&server_url, &api_key, &id).await?;
-        }
-
-        Commands::CheckTokens => {
-            api_check_tokens(&server_url, &api_key).await?;
-        }
+        Commands::Stats => api_stats(server_url, api_key).await?,
+        Commands::ListFailed { limit } => api_list_failed(server_url, api_key, limit).await?,
+        Commands::Retry { id } => api_retry(server_url, api_key, &id).await?,
+        Commands::CheckTokens => api_check_tokens(server_url, api_key).await?,
     }
 
+    Ok(())
+}
+
+async fn handle_sentry_fix(server_url: &str, api_key: &str, org: &str, project: &str, issue: &str) -> Result<()> {
+    match api_queue_sentry_fix(server_url, api_key, org, project, issue).await? {
+        SentryFixResult::Queued(id) => {
+            println!("Queued Sentry fix for {} in {}/{}", issue, org, project);
+            println!("Job ID: {id}");
+        }
+        SentryFixResult::Skipped(msg) => println!("Skipped: {msg}"),
+    }
+    Ok(())
+}
+
+async fn handle_jira_fix(server_url: &str, api_key: &str, issue: &str, jira_url: &str) -> Result<()> {
+    match api_queue_jira_fix(server_url, api_key, issue, jira_url).await? {
+        JiraFixResult::Queued(id) => {
+            println!("Queued Jira fix for {}", issue);
+            println!("Job ID: {id}");
+        }
+        JiraFixResult::Skipped(msg) => println!("Skipped: {msg}"),
+    }
     Ok(())
 }
 
@@ -390,171 +243,39 @@ fn print_failed_item(item: &FailedItem) {
     println!("  Failed:   {}", item.failed_at);
 }
 
-#[derive(Debug)]
-struct MrInfo {
-    title: String,
-    description: Option<String>,
-    source_branch: String,
-    target_branch: String,
-    author: String,
-    clone_url: String,
-}
+/// Print a single job line.
+fn print_job_line(job: &Job, show_all: bool) {
+    let name = job.metadata.name.as_deref().unwrap_or("unknown");
+    let status = job.status.as_ref();
 
-#[derive(Deserialize)]
-struct GitLabMr {
-    title: String,
-    description: Option<String>,
-    source_branch: String,
-    target_branch: String,
-    author: GitLabUser,
-}
+    let state = if status.and_then(|s| s.succeeded).unwrap_or(0) > 0 {
+        "succeeded"
+    } else if status.and_then(|s| s.failed).unwrap_or(0) > 0 {
+        "failed"
+    } else if status.and_then(|s| s.active).unwrap_or(0) > 0 {
+        "running"
+    } else {
+        "pending"
+    };
 
-#[derive(Deserialize)]
-struct GitLabUser {
-    username: String,
-}
-
-#[derive(Deserialize)]
-struct GitLabProject {
-    http_url_to_repo: String,
-}
-
-async fn fetch_mr_info(
-    gitlab_url: &str,
-    project: &str,
-    mr_iid: u64,
-    token: &str,
-) -> Result<MrInfo> {
-    let headers = claude_agent_server::gitlab_auth_headers(token)?;
-    let client = reqwest::Client::builder()
-        .default_headers(headers)
-        .build()?;
-
-    let encoded_project = urlencoding::encode(project);
-    let base_url = gitlab_url.trim_end_matches('/');
-
-    // Fetch MR details
-    let mr_url = format!(
-        "{}/api/v4/projects/{}/merge_requests/{}",
-        base_url, encoded_project, mr_iid
-    );
-
-    let mr_resp = client
-        .get(&mr_url)
-        .send()
-        .await
-        .context("Failed to fetch MR")?;
-
-    if !mr_resp.status().is_success() {
-        bail!(
-            "GitLab API error: {} - {}",
-            mr_resp.status(),
-            mr_resp.text().await?
-        );
+    if !show_all && (state == "succeeded" || state == "failed") {
+        return;
     }
 
-    let mr: GitLabMr = mr_resp.json().await.context("Failed to parse MR response")?;
+    let queue_id = job
+        .metadata
+        .labels
+        .as_ref()
+        .and_then(|l| l.get("queue-id"))
+        .map(|s| s.as_str())
+        .unwrap_or("-");
 
-    // Fetch project to get clone URL
-    let project_url = format!("{}/api/v4/projects/{}", base_url, encoded_project);
-
-    let project_resp = client
-        .get(&project_url)
-        .send()
-        .await
-        .context("Failed to fetch project")?;
-
-    if !project_resp.status().is_success() {
-        bail!(
-            "GitLab API error: {} - {}",
-            project_resp.status(),
-            project_resp.text().await?
-        );
-    }
-
-    let project_info: GitLabProject = project_resp
-        .json()
-        .await
-        .context("Failed to parse project response")?;
-
-    Ok(MrInfo {
-        title: mr.title,
-        description: mr.description,
-        source_branch: mr.source_branch,
-        target_branch: mr.target_branch,
-        author: mr.author.username,
-        clone_url: project_info.http_url_to_repo,
-    })
-}
-
-async fn show_notes(
-    gitlab_url: &str,
-    project: &str,
-    mr_iid: u64,
-    token: &str,
-    limit: usize,
-) -> Result<()> {
-    let headers = claude_agent_server::gitlab_auth_headers(token)?;
-    let client = reqwest::Client::builder()
-        .default_headers(headers)
-        .build()?;
-
-    let encoded_project = urlencoding::encode(project);
-    let base_url = gitlab_url.trim_end_matches('/');
-
-    let url = format!(
-        "{}/api/v4/projects/{}/merge_requests/{}/notes?sort=desc&per_page={}",
-        base_url, encoded_project, mr_iid, limit
-    );
-
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .context("Failed to fetch notes")?;
-
-    if !resp.status().is_success() {
-        bail!(
-            "GitLab API error: {} - {}",
-            resp.status(),
-            resp.text().await?
-        );
-    }
-
-    let notes: Vec<GitLabNote> = resp.json().await.context("Failed to parse notes")?;
-
-    if notes.is_empty() {
-        println!("No comments on !{}", mr_iid);
-        return Ok(());
-    }
-
-    for note in &notes {
-        if note.system {
-            continue;
-        }
-        println!("--- #{} by @{} ({})", note.id, note.author.username, note.created_at);
-        println!("{}", note.body);
-        println!();
-    }
-
-    Ok(())
-}
-
-#[derive(Deserialize)]
-struct GitLabNote {
-    id: u64,
-    body: String,
-    author: GitLabUser,
-    created_at: String,
-    system: bool,
+    println!("  {name}  [{state}]  queue-id={queue_id}");
 }
 
 async fn list_jobs(show_all: bool) -> Result<()> {
-    let client = Client::try_default()
-        .await
-        .context("Failed to create Kubernetes client")?;
+    let client = Client::try_default().await.context("Failed to create Kubernetes client")?;
     let jobs: Api<Job> = Api::namespaced(client, NAMESPACE);
-
     let lp = ListParams::default().labels("app=claude-review");
     let job_list = jobs.list(&lp).await.context("Failed to list jobs")?;
 
@@ -564,91 +285,21 @@ async fn list_jobs(show_all: bool) -> Result<()> {
     }
 
     println!("Review Jobs:");
-    for job in job_list.items {
-        let name = job.metadata.name.as_deref().unwrap_or("unknown");
-        let status = job.status.as_ref();
-
-        let state = if status.and_then(|s| s.succeeded).unwrap_or(0) > 0 {
-            "succeeded"
-        } else if status.and_then(|s| s.failed).unwrap_or(0) > 0 {
-            "failed"
-        } else if status.and_then(|s| s.active).unwrap_or(0) > 0 {
-            "running"
-        } else {
-            "pending"
-        };
-
-        // Skip completed jobs unless --all
-        if !show_all && (state == "succeeded" || state == "failed") {
-            continue;
-        }
-
-        let queue_id = job
-            .metadata
-            .labels
-            .as_ref()
-            .and_then(|l| l.get("queue-id"))
-            .map(|s| s.as_str())
-            .unwrap_or("-");
-
-        println!("  {name}  [{state}]  queue-id={queue_id}");
+    for job in &job_list.items {
+        print_job_line(job, show_all);
     }
 
     Ok(())
 }
 
 async fn show_logs(job_filter: Option<&str>, follow: bool, tail: i64) -> Result<()> {
-    let client = Client::try_default()
-        .await
-        .context("Failed to create Kubernetes client")?;
+    let client = Client::try_default().await.context("Failed to create Kubernetes client")?;
     let jobs: Api<Job> = Api::namespaced(client.clone(), NAMESPACE);
     let pods: Api<Pod> = Api::namespaced(client, NAMESPACE);
 
-    // Find the job
-    let job_name = if let Some(filter) = job_filter {
-        // If it looks like a full job name, use it directly
-        if filter.starts_with("claude-review-") {
-            filter.to_string()
-        } else {
-            // Search for job by queue-id prefix
-            let lp = ListParams::default().labels("app=claude-review");
-            let job_list = jobs.list(&lp).await.context("Failed to list jobs")?;
-
-            job_list
-                .items
-                .into_iter()
-                .find(|j| {
-                    j.metadata
-                        .labels
-                        .as_ref()
-                        .and_then(|l| l.get("queue-id"))
-                        .is_some_and(|id| id.starts_with(filter))
-                })
-                .and_then(|j| j.metadata.name)
-                .context(format!("No job found matching '{filter}'"))?
-        }
-    } else {
-        // Get the most recent running job, or the most recent job if none running
-        let lp = ListParams::default().labels("app=claude-review");
-        let job_list = jobs.list(&lp).await.context("Failed to list jobs")?;
-
-        let running = job_list.items.iter().find(|j| {
-            j.status
-                .as_ref()
-                .and_then(|s| s.active)
-                .unwrap_or(0)
-                > 0
-        });
-
-        running
-            .or(job_list.items.last())
-            .and_then(|j| j.metadata.name.clone())
-            .context("No review jobs found")?
-    };
-
+    let job_name = resolve_job_name(&jobs, job_filter).await?;
     println!("Fetching logs for job: {job_name}");
 
-    // Find the pod for this job
     let lp = ListParams::default().labels(&format!("job-name={job_name}"));
     let pod_list = pods.list(&lp).await.context("Failed to list pods")?;
 
@@ -658,31 +309,56 @@ async fn show_logs(job_filter: Option<&str>, follow: bool, tail: i64) -> Result<
         .and_then(|p| p.metadata.name.clone())
         .context("No pod found for job")?;
 
-    // Get logs
-    let mut lp = LogParams {
-        tail_lines: Some(tail),
-        follow,
-        ..Default::default()
-    };
+    stream_or_fetch_logs(&pods, &pod_name, follow, tail).await
+}
+
+async fn resolve_job_name(jobs: &Api<Job>, job_filter: Option<&str>) -> Result<String> {
+    if let Some(filter) = job_filter {
+        if filter.starts_with("claude-review-") {
+            return Ok(filter.to_string());
+        }
+        let lp = ListParams::default().labels("app=claude-review");
+        let job_list = jobs.list(&lp).await.context("Failed to list jobs")?;
+        return job_list
+            .items
+            .into_iter()
+            .find(|j| {
+                j.metadata
+                    .labels
+                    .as_ref()
+                    .and_then(|l| l.get("queue-id"))
+                    .is_some_and(|id| id.starts_with(filter))
+            })
+            .and_then(|j| j.metadata.name)
+            .context(format!("No job found matching '{filter}'"));
+    }
+
+    let lp = ListParams::default().labels("app=claude-review");
+    let job_list = jobs.list(&lp).await.context("Failed to list jobs")?;
+
+    let running = job_list
+        .items
+        .iter()
+        .find(|j| j.status.as_ref().and_then(|s| s.active).unwrap_or(0) > 0);
+
+    running
+        .or(job_list.items.last())
+        .and_then(|j| j.metadata.name.clone())
+        .context("No review jobs found")
+}
+
+async fn stream_or_fetch_logs(pods: &Api<Pod>, pod_name: &str, follow: bool, tail: i64) -> Result<()> {
+    let mut lp = LogParams { tail_lines: Some(tail), follow, ..Default::default() };
 
     if follow {
-        // Stream logs
-        let stream = pods
-            .log_stream(&pod_name, &lp)
-            .await
-            .context("Failed to get log stream")?;
-
+        let stream = pods.log_stream(pod_name, &lp).await.context("Failed to get log stream")?;
         let mut lines = stream.lines();
         while let Some(line) = lines.next().await {
             println!("{}", line?);
         }
     } else {
-        // Get all logs at once
         lp.follow = false;
-        let logs = pods
-            .logs(&pod_name, &lp)
-            .await
-            .context("Failed to get logs")?;
+        let logs = pods.logs(pod_name, &lp).await.context("Failed to get logs")?;
         print!("{logs}");
     }
 
@@ -691,7 +367,6 @@ async fn show_logs(job_filter: Option<&str>, follow: bool, tail: i64) -> Result<
 
 // HTTP API client for server communication
 
-/// Stats response from the server API.
 #[derive(Deserialize)]
 struct ApiStats {
     pending: u64,
@@ -699,35 +374,22 @@ struct ApiStats {
     failed: u64,
 }
 
-/// Create an HTTP client with API key authentication.
 fn create_api_client(api_key: &str) -> Result<reqwest::Client> {
     let mut headers = HeaderMap::new();
-    headers.insert(
-        "Authorization",
-        HeaderValue::from_str(&format!("Bearer {api_key}"))?,
-    );
-    Ok(reqwest::Client::builder()
-        .default_headers(headers)
-        .build()?)
+    headers.insert("Authorization", HeaderValue::from_str(&format!("Bearer {api_key}"))?);
+    Ok(reqwest::Client::builder().default_headers(headers).build()?)
 }
 
-/// Fetch queue stats via HTTP API.
 async fn api_stats(server_url: &str, api_key: &str) -> Result<()> {
     let client = create_api_client(api_key)?;
     let url = format!("{}/api/stats", server_url.trim_end_matches('/'));
-
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .context("Failed to fetch stats")?;
+    let resp = client.get(&url).send().await.context("Failed to fetch stats")?;
 
     if !resp.status().is_success() {
         bail!("API error: {} - {}", resp.status(), resp.text().await?);
     }
 
     let stats: ApiStats = resp.json().await.context("Failed to parse stats response")?;
-
     println!("Queue Statistics:");
     println!("  Pending:    {}", stats.pending);
     println!("  Processing: {}", stats.processing);
@@ -736,25 +398,16 @@ async fn api_stats(server_url: &str, api_key: &str) -> Result<()> {
     Ok(())
 }
 
-/// Fetch failed items via HTTP API.
 async fn api_list_failed(server_url: &str, api_key: &str, limit: usize) -> Result<()> {
     let client = create_api_client(api_key)?;
     let url = format!("{}/api/failed", server_url.trim_end_matches('/'));
-
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .context("Failed to fetch failed items")?;
+    let resp = client.get(&url).send().await.context("Failed to fetch failed items")?;
 
     if !resp.status().is_success() {
         bail!("API error: {} - {}", resp.status(), resp.text().await?);
     }
 
-    let items: Vec<FailedItem> = resp
-        .json()
-        .await
-        .context("Failed to parse failed items response")?;
+    let items: Vec<FailedItem> = resp.json().await.context("Failed to parse failed items response")?;
 
     if items.is_empty() {
         println!("No failed items");
@@ -769,16 +422,10 @@ async fn api_list_failed(server_url: &str, api_key: &str, limit: usize) -> Resul
     Ok(())
 }
 
-/// Retry a failed item via HTTP API.
 async fn api_retry(server_url: &str, api_key: &str, id: &str) -> Result<()> {
     let client = create_api_client(api_key)?;
     let url = format!("{}/api/retry/{}", server_url.trim_end_matches('/'), id);
-
-    let resp = client
-        .post(&url)
-        .send()
-        .await
-        .context("Failed to retry item")?;
+    let resp = client.post(&url).send().await.context("Failed to retry item")?;
 
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         println!("Job not found in failed list: {id}");
@@ -791,52 +438,6 @@ async fn api_retry(server_url: &str, api_key: &str, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Queue a review via HTTP API.
-async fn api_queue_review(
-    server_url: &str,
-    api_key: &str,
-    project: &str,
-    mr_iid: u64,
-    gitlab_url: &str,
-    action: Option<&str>,
-) -> Result<String> {
-    let client = create_api_client(api_key)?;
-    let url = format!("{}/api/review", server_url.trim_end_matches('/'));
-
-    let mut body = serde_json::json!({
-        "project": project,
-        "mr_iid": mr_iid,
-        "gitlab_url": gitlab_url,
-    });
-    if let Some(action) = action {
-        body["action"] = serde_json::json!(action);
-    }
-
-    let resp = client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .context("Failed to queue review")?;
-
-    if !resp.status().is_success() {
-        bail!("API error: {} - {}", resp.status(), resp.text().await?);
-    }
-
-    #[derive(Deserialize)]
-    struct QueueResponse {
-        job_id: String,
-    }
-
-    let result: QueueResponse = resp
-        .json()
-        .await
-        .context("Failed to parse queue response")?;
-
-    Ok(result.job_id)
-}
-
-/// Queue a GitHub PR review via HTTP API.
 async fn api_queue_github_review(
     server_url: &str,
     api_key: &str,
@@ -847,45 +448,26 @@ async fn api_queue_github_review(
     let client = create_api_client(api_key)?;
     let url = format!("{}/api/review/github", server_url.trim_end_matches('/'));
 
-    let mut body = serde_json::json!({
-        "repo": repo,
-        "pr": pr,
-    });
+    let mut body = serde_json::json!({ "repo": repo, "pr": pr });
     if let Some(action) = action {
         body["action"] = serde_json::json!(action);
     }
 
-    let resp = client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .context("Failed to queue GitHub review")?;
+    let resp = client.post(&url).json(&body).send().await.context("Failed to queue GitHub review")?;
 
     if !resp.status().is_success() {
         bail!("API error: {} - {}", resp.status(), resp.text().await?);
     }
 
     #[derive(Deserialize)]
-    struct QueueResponse {
-        job_id: String,
-    }
+    struct QueueResponse { job_id: String }
 
-    let result: QueueResponse = resp
-        .json()
-        .await
-        .context("Failed to parse queue response")?;
-
+    let result: QueueResponse = resp.json().await.context("Failed to parse queue response")?;
     Ok(result.job_id)
 }
 
-/// Result of queuing a Sentry fix.
-enum SentryFixResult {
-    Queued(String),
-    Skipped(String),
-}
+enum SentryFixResult { Queued(String), Skipped(String) }
 
-/// Queue a Sentry fix via HTTP API.
 async fn api_queue_sentry_fix(
     server_url: &str,
     api_key: &str,
@@ -895,48 +477,25 @@ async fn api_queue_sentry_fix(
 ) -> Result<SentryFixResult> {
     let client = create_api_client(api_key)?;
     let url = format!("{}/api/sentry-fix", server_url.trim_end_matches('/'));
+    let body = serde_json::json!({ "organization": org, "project": project, "issue_id": issue_id });
 
-    let body = serde_json::json!({
-        "organization": org,
-        "project": project,
-        "issue_id": issue_id,
-    });
-
-    let resp = client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .context("Failed to queue Sentry fix")?;
+    let resp = client.post(&url).json(&body).send().await.context("Failed to queue Sentry fix")?;
 
     if !resp.status().is_success() {
         bail!("API error: {} - {}", resp.status(), resp.text().await?);
     }
 
-    let result: serde_json::Value = resp
-        .json()
-        .await
-        .context("Failed to parse queue response")?;
+    let result: serde_json::Value = resp.json().await.context("Failed to parse queue response")?;
 
-    let status = result["status"].as_str().unwrap_or("");
-    if status == "skipped" {
-        let message = result["message"].as_str().unwrap_or("Already exists");
-        Ok(SentryFixResult::Skipped(message.to_string()))
+    if result["status"].as_str().unwrap_or("") == "skipped" {
+        Ok(SentryFixResult::Skipped(result["message"].as_str().unwrap_or("Already exists").to_string()))
     } else {
-        let job_id = result["job_id"]
-            .as_str()
-            .context("Missing job_id in response")?;
-        Ok(SentryFixResult::Queued(job_id.to_string()))
+        Ok(SentryFixResult::Queued(result["job_id"].as_str().context("Missing job_id")?.to_string()))
     }
 }
 
-/// Result of queuing a Jira fix.
-enum JiraFixResult {
-    Queued(String),
-    Skipped(String),
-}
+enum JiraFixResult { Queued(String), Skipped(String) }
 
-/// Queue a Jira fix via HTTP API.
 async fn api_queue_jira_fix(
     server_url: &str,
     api_key: &str,
@@ -945,133 +504,67 @@ async fn api_queue_jira_fix(
 ) -> Result<JiraFixResult> {
     let client = create_api_client(api_key)?;
     let url = format!("{}/api/jira-fix", server_url.trim_end_matches('/'));
+    let body = serde_json::json!({ "issue_key": issue_key, "jira_url": jira_url });
 
-    let body = serde_json::json!({
-        "issue_key": issue_key,
-        "jira_url": jira_url,
-    });
-
-    let resp = client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .context("Failed to queue Jira fix")?;
+    let resp = client.post(&url).json(&body).send().await.context("Failed to queue Jira fix")?;
 
     if !resp.status().is_success() {
         bail!("API error: {} - {}", resp.status(), resp.text().await?);
     }
 
-    let result: serde_json::Value = resp
-        .json()
-        .await
-        .context("Failed to parse queue response")?;
+    let result: serde_json::Value = resp.json().await.context("Failed to parse queue response")?;
 
-    let status = result["status"].as_str().unwrap_or("");
-    if status == "skipped" {
-        let message = result["message"].as_str().unwrap_or("Already exists");
-        Ok(JiraFixResult::Skipped(message.to_string()))
+    if result["status"].as_str().unwrap_or("") == "skipped" {
+        Ok(JiraFixResult::Skipped(result["message"].as_str().unwrap_or("Already exists").to_string()))
     } else {
-        let job_id = result["job_id"]
-            .as_str()
-            .context("Missing job_id in response")?;
-        Ok(JiraFixResult::Queued(job_id.to_string()))
+        Ok(JiraFixResult::Queued(result["job_id"].as_str().context("Missing job_id")?.to_string()))
     }
 }
 
-/// Check server's configured tokens via API.
+#[derive(Deserialize)]
+struct TokenStatus {
+    configured: bool,
+    valid: bool,
+    info: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CheckTokensResponse {
+    github: TokenStatus,
+    sentry: TokenStatus,
+    claude: TokenStatus,
+    jira: TokenStatus,
+}
+
+fn print_token_status(name: &str, status: &TokenStatus, all_valid: &mut bool) {
+    print!("{name}");
+    if !status.configured {
+        println!("- not configured");
+    } else if status.valid {
+        println!("✓ valid ({})", status.info.as_deref().unwrap_or(""));
+    } else {
+        println!("✗ invalid - {}", status.error.as_deref().unwrap_or("unknown"));
+        *all_valid = false;
+    }
+}
+
 async fn api_check_tokens(server_url: &str, api_key: &str) -> Result<()> {
     let client = create_api_client(api_key)?;
     let url = format!("{}/api/check-tokens", server_url.trim_end_matches('/'));
-
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .context("Failed to check tokens")?;
+    let resp = client.get(&url).send().await.context("Failed to check tokens")?;
 
     if !resp.status().is_success() {
         bail!("API error: {} - {}", resp.status(), resp.text().await?);
     }
 
-    #[derive(Deserialize)]
-    struct TokenStatus {
-        configured: bool,
-        valid: bool,
-        info: Option<String>,
-        error: Option<String>,
-    }
-
-    #[derive(Deserialize)]
-    struct CheckTokensResponse {
-        gitlab: TokenStatus,
-        github: TokenStatus,
-        sentry: TokenStatus,
-        claude: TokenStatus,
-        jira: TokenStatus,
-    }
-
-    let result: CheckTokensResponse = resp
-        .json()
-        .await
-        .context("Failed to parse check-tokens response")?;
+    let result: CheckTokensResponse = resp.json().await.context("Failed to parse check-tokens response")?;
 
     let mut all_valid = true;
-
-    // Print GitLab status
-    print!("GitLab:  ");
-    if !result.gitlab.configured {
-        println!("- not configured");
-    } else if result.gitlab.valid {
-        println!("✓ valid ({})", result.gitlab.info.as_deref().unwrap_or(""));
-    } else {
-        println!("✗ invalid - {}", result.gitlab.error.as_deref().unwrap_or("unknown"));
-        all_valid = false;
-    }
-
-    // Print GitHub status
-    print!("GitHub:  ");
-    if !result.github.configured {
-        println!("- not configured");
-    } else if result.github.valid {
-        println!("✓ valid ({})", result.github.info.as_deref().unwrap_or(""));
-    } else {
-        println!("✗ invalid - {}", result.github.error.as_deref().unwrap_or("unknown"));
-        all_valid = false;
-    }
-
-    // Print Sentry status
-    print!("Sentry:  ");
-    if !result.sentry.configured {
-        println!("- not configured");
-    } else if result.sentry.valid {
-        println!("✓ valid ({})", result.sentry.info.as_deref().unwrap_or(""));
-    } else {
-        println!("✗ invalid - {}", result.sentry.error.as_deref().unwrap_or("unknown"));
-        all_valid = false;
-    }
-
-    // Print Claude status
-    print!("Claude:  ");
-    if !result.claude.configured {
-        println!("- not configured");
-    } else if result.claude.valid {
-        println!("✓ valid ({})", result.claude.info.as_deref().unwrap_or(""));
-    } else {
-        println!("✗ invalid - {}", result.claude.error.as_deref().unwrap_or("unknown"));
-        all_valid = false;
-    }
-
-    // Print Jira status
-    print!("Jira:    ");
-    if !result.jira.configured {
-        println!("- not configured");
-    } else if result.jira.valid {
-        println!("✓ valid ({})", result.jira.info.as_deref().unwrap_or(""));
-    } else {
-        println!("✗ invalid - {}", result.jira.error.as_deref().unwrap_or("unknown"));
-        all_valid = false;
-    }
+    print_token_status("GitHub:  ", &result.github, &mut all_valid);
+    print_token_status("Sentry:  ", &result.sentry, &mut all_valid);
+    print_token_status("Claude:  ", &result.claude, &mut all_valid);
+    print_token_status("Jira:    ", &result.jira, &mut all_valid);
 
     if !all_valid {
         bail!("One or more tokens are invalid");

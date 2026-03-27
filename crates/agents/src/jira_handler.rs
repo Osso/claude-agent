@@ -39,32 +39,10 @@ Where TYPE is one of:
 - `docs` - for documentation changes
 - `chore` - for maintenance tasks
 
-## Creating the Merge Request / Pull Request
+## Creating the Pull Request
 
-After pushing, create the MR/PR:
+After pushing, create the PR:
 
-**For GitLab:**
-```bash
-gitlab mr create -p <PROJECT> --source jira-fix/<ISSUE_KEY_LOWERCASE> --target <TARGET_BRANCH> \
-  --title "<TYPE>: <ISSUE_KEY> - <brief description>" \
-  --description "## Summary
-
-<what this MR does>
-
-## Changes
-
-- <bullet points of changes>
-
-## Testing
-
-<how to test the changes>
-
-## Jira Ticket
-
-<JIRA_URL>"
-```
-
-**For GitHub:**
 ```bash
 gh pr create --title "<TYPE>: <ISSUE_KEY> - <brief description>" \
   --body "## Summary
@@ -86,7 +64,7 @@ gh pr create --title "<TYPE>: <ISSUE_KEY> - <brief description>" \
 
 ## Project Guidelines
 
-Before making changes, check if `.claude/mr.md` exists in the repo root. If it does, read it and follow those project-specific guidelines for code changes and MR creation.
+Before making changes, check if `.claude/mr.md` exists in the repo root. If it does, read it and follow those project-specific guidelines for code changes and PR creation.
 
 ## Rules
 
@@ -108,37 +86,24 @@ Before making changes, check if `.claude/mr.md` exists in the repo root. If it d
 - Read files with the Read tool
 - Edit files with the Edit tool
 - Search files with Glob and Grep
-- Run commands: git, gitlab mr, gh pr, test runners, linters
+- Run commands: git, gh pr, test runners, linters
 "###;
 
 /// Context for a Jira ticket job.
 #[derive(Debug, Clone)]
 pub struct JiraTicketContext {
-    /// Jira issue key (e.g., "GC-123")
     pub issue_key: String,
-    /// Issue summary/title
     pub summary: String,
-    /// Issue description (plain text)
     pub description: Option<String>,
-    /// Issue type (e.g., "Bug", "Task", "Story")
     pub issue_type: String,
-    /// Priority
     pub priority: Option<String>,
-    /// Current status
     pub status: String,
-    /// Labels
     pub labels: Vec<String>,
-    /// Web URL to the Jira issue
     pub web_url: String,
-    /// The comment that triggered this job
     pub trigger_comment: String,
-    /// Author of the trigger comment
     pub trigger_author: Option<String>,
-    /// VCS project path
     pub vcs_project: String,
-    /// Target branch
     pub target_branch: String,
-    /// VCS platform (gitlab or github)
     pub vcs_platform: String,
 }
 
@@ -157,13 +122,22 @@ impl JiraHandlerAgent {
         }
     }
 
-    /// Build the prompt for Claude.
     pub fn build_prompt(&self) -> String {
         let mut prompt = String::new();
-
         prompt.push_str(JIRA_HANDLER_SYSTEM_PROMPT);
         prompt.push_str("\n\n---\n\n");
+        self.append_ticket_details(&mut prompt);
+        self.append_description(&mut prompt);
+        self.append_trigger_comment(&mut prompt);
+        self.append_task(&mut prompt);
+        prompt
+    }
 
+    pub fn system_prompt(&self) -> &'static str {
+        JIRA_HANDLER_SYSTEM_PROMPT
+    }
+
+    fn append_ticket_details(&self, prompt: &mut String) {
         prompt.push_str("## Jira Ticket Details\n\n");
         prompt.push_str(&format!("**Issue Key**: {}\n", self.context.issue_key));
         prompt.push_str(&format!("**Summary**: {}\n", self.context.summary));
@@ -179,28 +153,32 @@ impl JiraHandlerAgent {
         prompt.push_str(&format!("**VCS Project**: {}\n", self.context.vcs_project));
         prompt.push_str(&format!("**Target Branch**: {}\n", self.context.target_branch));
         prompt.push_str(&format!("**VCS Platform**: {}\n", self.context.vcs_platform));
+    }
 
+    fn append_description(&self, prompt: &mut String) {
         prompt.push_str("\n## Description\n\n");
-        if let Some(ref description) = self.context.description {
-            if description.is_empty() {
-                prompt.push_str("_No description provided._\n");
-            } else {
-                prompt.push_str(description);
+        match &self.context.description {
+            Some(desc) if !desc.is_empty() => {
+                prompt.push_str(desc);
                 prompt.push('\n');
             }
-        } else {
-            prompt.push_str("_No description provided._\n");
+            _ => prompt.push_str("_No description provided._\n"),
         }
+    }
 
-        if !self.context.trigger_comment.is_empty() {
-            prompt.push_str("\n## Trigger Comment\n\n");
-            if let Some(ref author) = self.context.trigger_author {
-                prompt.push_str(&format!("**From**: {}\n\n", author));
-            }
-            prompt.push_str(&self.context.trigger_comment);
-            prompt.push('\n');
+    fn append_trigger_comment(&self, prompt: &mut String) {
+        if self.context.trigger_comment.is_empty() {
+            return;
         }
+        prompt.push_str("\n## Trigger Comment\n\n");
+        if let Some(ref author) = self.context.trigger_author {
+            prompt.push_str(&format!("**From**: {}\n\n", author));
+        }
+        prompt.push_str(&self.context.trigger_comment);
+        prompt.push('\n');
+    }
 
+    fn append_task(&self, prompt: &mut String) {
         prompt.push_str("\n## Task\n\n");
         prompt.push_str(&format!(
             "1. Analyze the ticket `{}`: {}\n",
@@ -212,14 +190,7 @@ impl JiraHandlerAgent {
             "4. Create branch `jira-fix/{}` and commit\n",
             self.context.issue_key.to_lowercase()
         ));
-        prompt.push_str("5. Push and create an MR/PR\n");
-
-        prompt
-    }
-
-    /// Get the system prompt.
-    pub fn system_prompt(&self) -> &'static str {
-        JIRA_HANDLER_SYSTEM_PROMPT
+        prompt.push_str("5. Push and create a PR\n");
     }
 }
 
@@ -239,9 +210,9 @@ mod tests {
             web_url: "https://globalcomix.atlassian.net/browse/GC-123".into(),
             trigger_comment: "@claude-agent please fix this bug".into(),
             trigger_author: Some("John Doe".into()),
-            vcs_project: "Globalcomix/gc".into(),
+            vcs_project: "globalcomix/gc".into(),
             target_branch: "master".into(),
-            vcs_platform: "gitlab".into(),
+            vcs_platform: "github".into(),
         }
     }
 
@@ -262,13 +233,11 @@ mod tests {
 
     #[test]
     fn test_build_prompt_github() {
-        let mut ctx = make_context();
-        ctx.vcs_platform = "github".into();
-
-        let agent = JiraHandlerAgent::new(ctx, "/tmp/repo");
+        let agent = JiraHandlerAgent::new(make_context(), "/tmp/repo");
         let prompt = agent.build_prompt();
 
         assert!(prompt.contains("gh pr create"));
+        assert!(!prompt.contains("gitlab mr create"));
     }
 
     #[test]
@@ -290,7 +259,6 @@ mod tests {
         let agent = JiraHandlerAgent::new(ctx, "/tmp/repo");
         let prompt = agent.build_prompt();
 
-        // Labels line should not appear
         assert!(!prompt.contains("**Labels**:"));
     }
 }

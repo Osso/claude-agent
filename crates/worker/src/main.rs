@@ -39,51 +39,66 @@ fn main() -> Result<()> {
     }
 }
 
-/// Run a review job (MR/PR review or lint-fix).
-fn run_review_job(payload: claude_agent_server::ReviewPayload) -> Result<()> {
-    let is_github = payload.platform == "github";
-
-    let token = if is_github {
-        env::var("GITHUB_TOKEN").context("GITHUB_TOKEN not set")?
+/// Inject GitHub access token into a git HTTPS URL.
+fn inject_github_credentials(url: &str, token: &str) -> String {
+    if let Some(rest) = url.strip_prefix("https://") {
+        format!("https://x-access-token:{token}@{rest}")
     } else {
-        env::var("GITLAB_TOKEN").context("GITLAB_TOKEN not set")?
-    };
+        url.to_string()
+    }
+}
 
-    info!(
-        project = %payload.project,
-        mr_iid = %payload.mr_iid,
-        platform = %payload.platform,
-        "Processing review"
-    );
+fn decode_payload() -> Result<JobPayload> {
+    let payload_b64 = env::var("REVIEW_PAYLOAD").context("REVIEW_PAYLOAD not set")?;
+    let payload_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&payload_b64)
+        .context("Failed to decode base64 payload")?;
 
-    let work_dir = PathBuf::from("/work/repo");
-    std::fs::create_dir_all(&work_dir)?;
+    if let Ok(payload) = serde_json::from_slice::<JobPayload>(&payload_bytes) {
+        return Ok(payload);
+    }
 
-    let auth_clone_url = if is_github {
-        inject_github_credentials(&payload.clone_url, &token)
-    } else {
-        inject_git_credentials(&payload.clone_url, &token)
-    };
+    let legacy: claude_agent_server::ReviewPayload =
+        serde_json::from_slice(&payload_bytes).context("Failed to parse payload JSON")?;
+    warn!("Parsed legacy ReviewPayload format (missing 'type' tag)");
+    Ok(JobPayload::Review(legacy))
+}
 
-    clone_repo(
-        &auth_clone_url,
-        &payload.source_branch,
-        &payload.target_branch,
-        &work_dir,
-    )?;
+/// Clone repo and return (diff, changed_files, optional SHAs).
+fn clone_and_get_diff(
+    payload: &claude_agent_server::ReviewPayload,
+    token: &str,
+    work_dir: &PathBuf,
+) -> Result<(String, Vec<String>, Option<(String, String, String)>)> {
+    let auth_clone_url = inject_github_credentials(&payload.clone_url, token);
+    clone_repo(&auth_clone_url, &payload.source_branch, &payload.target_branch, work_dir)?;
 
-    let diff = get_diff(&work_dir, &payload.target_branch)?;
-    let changed_files = get_changed_files(&work_dir, &payload.target_branch)?;
+    let diff = get_diff(work_dir, &payload.target_branch)?;
+    let changed_files = get_changed_files(work_dir, &payload.target_branch)?;
 
-    let (base_sha, head_sha, start_sha) = match get_diff_shas(&work_dir, &payload.target_branch) {
-        Ok(shas) => (Some(shas.0), Some(shas.1), Some(shas.2)),
+    let shas = match get_diff_shas(work_dir, &payload.target_branch) {
+        Ok(shas) => Some(shas),
         Err(e) => {
             warn!(error = %e, "Failed to compute diff SHAs, inline comments will not work");
-            (None, None, None)
+            None
         }
     };
 
-    let context = ReviewContext {
+    Ok((diff, changed_files, shas))
+}
+
+/// Build ReviewContext from payload and computed diff data.
+fn build_review_context(
+    payload: &claude_agent_server::ReviewPayload,
+    diff: String,
+    changed_files: Vec<String>,
+    shas: Option<(String, String, String)>,
+) -> ReviewContext {
+    let (base_sha, head_sha, start_sha) = match shas {
+        Some((b, h, s)) => (Some(b), Some(h), Some(s)),
+        None => (None, None, None),
+    };
+    ReviewContext {
         project: payload.project.clone(),
         mr_id: payload.mr_iid.clone(),
         source_branch: payload.source_branch.clone(),
@@ -96,56 +111,93 @@ fn run_review_job(payload: claude_agent_server::ReviewPayload) -> Result<()> {
         base_sha,
         head_sha,
         start_sha,
-    };
+    }
+}
 
-    let agent = MrReviewAgent::new(context, &work_dir);
-
-    let prompt = if payload.action == "comment" {
+/// Build the review prompt based on action type.
+fn build_review_prompt(
+    payload: &claude_agent_server::ReviewPayload,
+    agent: &MrReviewAgent,
+    token: &str,
+) -> Result<String> {
+    if payload.action == "comment" {
         let instruction = payload.trigger_comment.as_deref().unwrap_or("review this");
         info!(instruction = %instruction, "Building comment-triggered prompt");
-        let discussions = if !is_github {
-            match fetch_all_discussions(&payload, &token) {
-                Ok(d) => {
-                    info!(threads = d.len(), "Fetched discussion threads for context");
-                    let formatted = format_discussions(&d);
-                    if formatted.is_empty() { None } else { Some(formatted) }
-                }
-                Err(e) => {
-                    warn!(error = %e, "Failed to fetch discussions, proceeding without context");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        agent.build_comment_prompt(instruction, discussions.as_deref())
+        Ok(agent.build_comment_prompt(instruction, None))
     } else if payload.action == "lint_fix" {
-        info!("Building lint-fix prompt (will fetch CI logs via gitlab CLI)");
-        agent.build_lint_fix_prompt()
-    } else if is_github {
-        if payload.action == "update" {
-            let discussions = fetch_github_review_comments(&payload, &token)?;
-            agent.build_github_update_prompt(&discussions)
-        } else {
-            agent.build_github_prompt()
-        }
+        info!("Building lint-fix prompt");
+        Ok(agent.build_lint_fix_prompt())
     } else if payload.action == "update" {
-        let discussions = fetch_unresolved_discussions(&payload, &token)?;
-        info!(
-            threads = discussions.len(),
-            "Fetched unresolved discussion threads"
-        );
-        let formatted = format_discussions(&discussions);
-        agent.build_update_prompt(&formatted)
+        let discussions = fetch_github_review_comments(payload, token)?;
+        Ok(agent.build_github_update_prompt(&discussions))
     } else {
-        agent.build_prompt()
-    };
+        Ok(agent.build_github_prompt())
+    }
+}
+
+/// Run a review job (PR review or lint-fix).
+fn run_review_job(payload: claude_agent_server::ReviewPayload) -> Result<()> {
+    let token = env::var("GITHUB_TOKEN").context("GITHUB_TOKEN not set")?;
+
+    info!(
+        project = %payload.project,
+        mr_iid = %payload.mr_iid,
+        platform = %payload.platform,
+        "Processing review"
+    );
+
+    let work_dir = PathBuf::from("/work/repo");
+    std::fs::create_dir_all(&work_dir)?;
+
+    let (diff, changed_files, shas) = clone_and_get_diff(&payload, &token, &work_dir)?;
+    let context = build_review_context(&payload, diff, changed_files, shas);
+
+    let agent = MrReviewAgent::new(context, &work_dir);
+    let prompt = build_review_prompt(&payload, &agent, &token)?;
 
     info!(action = %payload.action, platform = %payload.platform, "Running Claude");
     run_claude(&work_dir, &prompt)?;
 
     info!("Review completed");
     Ok(())
+}
+
+/// Fetch Sentry issue details (stacktrace, tags, title, culprit, platform).
+fn fetch_sentry_details(
+    payload: &SentryFixPayload,
+    sentry_token: &str,
+) -> Result<(String, Vec<(String, String)>, String, String, String)> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let client = SentryClient::new(&payload.organization, sentry_token)?;
+
+        let event = client.get_issue_latest_event(&payload.issue_id).await?;
+        let stacktrace = format_stacktrace(&event);
+        let tags = extract_tags(&event);
+
+        let issue = client.get_issue(&payload.issue_id).await?;
+        let title = issue["title"].as_str().unwrap_or(&payload.title).to_string();
+        let culprit = issue["culprit"].as_str().unwrap_or(&payload.culprit).to_string();
+        let platform = issue["platform"].as_str().unwrap_or(&payload.platform).to_string();
+
+        Ok::<_, anyhow::Error>((stacktrace, tags, title, culprit, platform))
+    })
+}
+
+/// Clone repo and run Claude for a Sentry fix.
+fn clone_and_run_sentry_fix(payload: &SentryFixPayload, context: SentryFixContext) -> Result<()> {
+    let work_dir = PathBuf::from("/work/repo");
+    std::fs::create_dir_all(&work_dir)?;
+
+    let token = env::var("GITHUB_TOKEN").context("GITHUB_TOKEN not set")?;
+    let auth_clone_url = inject_github_credentials(&payload.clone_url, &token);
+    clone_branch(&auth_clone_url, &payload.target_branch, &work_dir)?;
+
+    let agent = SentryFixerAgent::new(context, &work_dir);
+    let prompt = agent.build_prompt();
+
+    info!(short_id = %payload.short_id, "Running Claude for Sentry fix");
+    run_claude(&work_dir, &prompt)
 }
 
 /// Run a Sentry fix job.
@@ -157,58 +209,10 @@ fn run_sentry_fix_job(payload: SentryFixPayload) -> Result<()> {
         "Processing Sentry fix"
     );
 
-    // Fetch full issue details from Sentry API
     let sentry_token = env::var("SENTRY_AUTH_TOKEN").context("SENTRY_AUTH_TOKEN not set")?;
-    let rt = tokio::runtime::Runtime::new()?;
-    let (stacktrace, tags, title, culprit, platform) = rt.block_on(async {
-        let client = SentryClient::new(&payload.organization, &sentry_token)?;
+    let (stacktrace, tags, title, culprit, platform) = fetch_sentry_details(&payload, &sentry_token)?;
+    info!(stacktrace_len = stacktrace.len(), tags_count = tags.len(), "Fetched Sentry issue details");
 
-        // Fetch latest event for stacktrace
-        let event = client.get_issue_latest_event(&payload.issue_id).await?;
-        let stacktrace = format_stacktrace(&event);
-        let tags = extract_tags(&event);
-
-        // Get issue details for title/culprit if not in payload
-        let issue = client.get_issue(&payload.issue_id).await?;
-        let title = issue["title"].as_str().unwrap_or(&payload.title).to_string();
-        let culprit = issue["culprit"]
-            .as_str()
-            .unwrap_or(&payload.culprit)
-            .to_string();
-        let platform = issue["platform"]
-            .as_str()
-            .unwrap_or(&payload.platform)
-            .to_string();
-
-        Ok::<_, anyhow::Error>((stacktrace, tags, title, culprit, platform))
-    })?;
-
-    info!(
-        stacktrace_len = stacktrace.len(),
-        tags_count = tags.len(),
-        "Fetched Sentry issue details"
-    );
-
-    // Clone repository
-    let work_dir = PathBuf::from("/work/repo");
-    std::fs::create_dir_all(&work_dir)?;
-
-    let token = if payload.vcs_platform == "github" {
-        env::var("GITHUB_TOKEN").context("GITHUB_TOKEN not set for GitHub repo")?
-    } else {
-        env::var("GITLAB_TOKEN").context("GITLAB_TOKEN not set for GitLab repo")?
-    };
-
-    let auth_clone_url = if payload.vcs_platform == "github" {
-        inject_github_credentials(&payload.clone_url, &token)
-    } else {
-        inject_git_credentials(&payload.clone_url, &token)
-    };
-
-    // Clone target branch (not a specific MR branch)
-    clone_branch(&auth_clone_url, &payload.target_branch, &work_dir)?;
-
-    // Build context and prompt
     let context = SentryFixContext {
         short_id: payload.short_id.clone(),
         title,
@@ -222,46 +226,14 @@ fn run_sentry_fix_job(payload: SentryFixPayload) -> Result<()> {
         vcs_platform: payload.vcs_platform.clone(),
     };
 
-    let agent = SentryFixerAgent::new(context, &work_dir);
-    let prompt = agent.build_prompt();
-
-    info!(short_id = %payload.short_id, "Running Claude for Sentry fix");
-    run_claude(&work_dir, &prompt)?;
-
+    clone_and_run_sentry_fix(&payload, context)?;
     info!("Sentry fix completed");
     Ok(())
 }
 
-/// Run a Jira ticket fix job.
-fn run_jira_ticket_job(payload: JiraTicketPayload) -> Result<()> {
-    info!(
-        issue_key = %payload.issue_key,
-        summary = %payload.summary,
-        vcs_project = %payload.vcs_project,
-        "Processing Jira ticket"
-    );
-
-    // Clone repository
-    let work_dir = PathBuf::from("/work/repo");
-    std::fs::create_dir_all(&work_dir)?;
-
-    let token = if payload.vcs_platform == "github" {
-        env::var("GITHUB_TOKEN").context("GITHUB_TOKEN not set for GitHub repo")?
-    } else {
-        env::var("GITLAB_TOKEN").context("GITLAB_TOKEN not set for GitLab repo")?
-    };
-
-    let auth_clone_url = if payload.vcs_platform == "github" {
-        inject_github_credentials(&payload.clone_url, &token)
-    } else {
-        inject_git_credentials(&payload.clone_url, &token)
-    };
-
-    // Clone target branch (not a specific MR branch)
-    clone_branch(&auth_clone_url, &payload.target_branch, &work_dir)?;
-
-    // Build context and prompt
-    let context = JiraTicketContext {
+/// Build JiraTicketContext from payload.
+fn build_jira_context(payload: &JiraTicketPayload) -> JiraTicketContext {
+    JiraTicketContext {
         issue_key: payload.issue_key.clone(),
         summary: payload.summary.clone(),
         description: payload.description.clone(),
@@ -275,8 +247,26 @@ fn run_jira_ticket_job(payload: JiraTicketPayload) -> Result<()> {
         vcs_project: payload.vcs_project.clone(),
         target_branch: payload.target_branch.clone(),
         vcs_platform: payload.vcs_platform.clone(),
-    };
+    }
+}
 
+/// Run a Jira ticket fix job.
+fn run_jira_ticket_job(payload: JiraTicketPayload) -> Result<()> {
+    info!(
+        issue_key = %payload.issue_key,
+        summary = %payload.summary,
+        vcs_project = %payload.vcs_project,
+        "Processing Jira ticket"
+    );
+
+    let work_dir = PathBuf::from("/work/repo");
+    std::fs::create_dir_all(&work_dir)?;
+
+    let token = env::var("GITHUB_TOKEN").context("GITHUB_TOKEN not set")?;
+    let auth_clone_url = inject_github_credentials(&payload.clone_url, &token);
+    clone_branch(&auth_clone_url, &payload.target_branch, &work_dir)?;
+
+    let context = build_jira_context(&payload);
     let agent = JiraHandlerAgent::new(context, &work_dir);
     let prompt = agent.build_prompt();
 
@@ -287,31 +277,11 @@ fn run_jira_ticket_job(payload: JiraTicketPayload) -> Result<()> {
     Ok(())
 }
 
-fn decode_payload() -> Result<JobPayload> {
-    let payload_b64 = env::var("REVIEW_PAYLOAD").context("REVIEW_PAYLOAD not set")?;
-    let payload_bytes = base64::engine::general_purpose::STANDARD
-        .decode(&payload_b64)
-        .context("Failed to decode base64 payload")?;
-
-    // Try parsing as the new tagged JobPayload format first
-    if let Ok(payload) = serde_json::from_slice::<JobPayload>(&payload_bytes) {
-        return Ok(payload);
-    }
-
-    // Fall back to legacy ReviewPayload format (items queued before JobPayload was added)
-    let legacy: claude_agent_server::ReviewPayload =
-        serde_json::from_slice(&payload_bytes).context("Failed to parse payload JSON")?;
-    warn!("Parsed legacy ReviewPayload format (missing 'type' tag)");
-    Ok(JobPayload::Review(legacy))
-}
-
 /// Run Claude Code with tools enabled. Claude will post the review itself.
 fn run_claude(work_dir: &PathBuf, prompt: &str) -> Result<()> {
     use std::io::Write;
     use std::process::Stdio;
 
-    // Use stdin to pass the prompt to avoid "Argument list too long" errors
-    // when the prompt (system prompt + MR diff) is very large.
     let mut child = Command::new("claude")
         .arg("-p")
         .arg("--dangerously-skip-permissions")
@@ -320,7 +290,6 @@ fn run_claude(work_dir: &PathBuf, prompt: &str) -> Result<()> {
         .spawn()
         .context("Failed to spawn claude")?;
 
-    // Write prompt to stdin
     if let Some(mut stdin) = child.stdin.take() {
         stdin
             .write_all(prompt.as_bytes())
@@ -336,30 +305,7 @@ fn run_claude(work_dir: &PathBuf, prompt: &str) -> Result<()> {
     Ok(())
 }
 
-/// Inject GitHub access token into a git HTTPS URL.
-fn inject_github_credentials(url: &str, token: &str) -> String {
-    if let Some(rest) = url.strip_prefix("https://") {
-        format!("https://x-access-token:{token}@{rest}")
-    } else {
-        url.to_string()
-    }
-}
-
-/// Inject OAuth2 credentials into a git HTTPS URL (GitLab).
-fn inject_git_credentials(url: &str, token: &str) -> String {
-    if let Some(rest) = url.strip_prefix("https://") {
-        format!("https://oauth2:{token}@{rest}")
-    } else {
-        url.to_string()
-    }
-}
-
-fn clone_repo(
-    clone_url: &str,
-    branch: &str,
-    target_branch: &str,
-    target: &PathBuf,
-) -> Result<()> {
+fn clone_repo(clone_url: &str, branch: &str, target_branch: &str, target: &PathBuf) -> Result<()> {
     info!(branch = %branch, "Cloning repository");
 
     let status = Command::new("git")
@@ -386,7 +332,7 @@ fn clone_repo(
     Ok(())
 }
 
-/// Clone a repository at a specific branch (for Sentry fix jobs).
+/// Clone a repository at a specific branch (for Sentry/Jira fix jobs).
 fn clone_branch(clone_url: &str, branch: &str, target: &PathBuf) -> Result<()> {
     info!(branch = %branch, "Cloning repository");
 
@@ -424,10 +370,8 @@ fn get_diff_shas(repo_dir: &PathBuf, target_branch: &str) -> Result<(String, Str
         &["merge-base", &format!("origin/{target_branch}"), "HEAD"],
     )?;
     let head_sha = run_git(repo_dir, &["rev-parse", "HEAD"])?;
-    // base_sha == start_sha for standard MRs
     Ok((start_sha.clone(), head_sha, start_sha))
 }
-
 
 fn get_diff(repo_dir: &PathBuf, target_branch: &str) -> Result<String> {
     let output = Command::new("git")
@@ -446,11 +390,7 @@ fn get_diff(repo_dir: &PathBuf, target_branch: &str) -> Result<String> {
 
 fn get_changed_files(repo_dir: &PathBuf, target_branch: &str) -> Result<Vec<String>> {
     let output = Command::new("git")
-        .args([
-            "diff",
-            "--name-only",
-            &format!("origin/{target_branch}...HEAD"),
-        ])
+        .args(["diff", "--name-only", &format!("origin/{target_branch}...HEAD")])
         .current_dir(repo_dir)
         .output()
         .context("Failed to run git diff --name-only")?;
@@ -460,138 +400,36 @@ fn get_changed_files(repo_dir: &PathBuf, target_branch: &str) -> Result<Vec<Stri
         bail!("git diff --name-only failed: {}", stderr);
     }
 
-    let files = String::from_utf8_lossy(&output.stdout)
+    Ok(String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(String::from)
-        .collect();
-
-    Ok(files)
+        .collect())
 }
 
-/// Fetch unresolved discussion threads from GitLab API.
-fn fetch_unresolved_discussions(
-    payload: &claude_agent_server::ReviewPayload,
-    token: &str,
-) -> Result<Vec<serde_json::Value>> {
-    let encoded_project = urlencoding::encode(&payload.project);
-    let gitlab_url = &payload.gitlab_url;
-    let iid = &payload.mr_iid;
-    let url = format!(
-        "{gitlab_url}/api/v4/projects/{encoded_project}/merge_requests/{iid}/discussions?per_page=100"
-    );
-
-    let headers = claude_agent_server::gitlab::gitlab_auth_headers(token)?;
-    let client = reqwest::blocking::Client::builder()
-        .default_headers(headers)
-        .build()?;
-
-    let resp = client.get(&url).send().context("Failed to fetch discussions")?;
-    if !resp.status().is_success() {
-        bail!(
-            "GitLab discussions API {} - {}",
-            resp.status(),
-            resp.text().unwrap_or_default()
-        );
-    }
-
-    let discussions: Vec<serde_json::Value> = resp.json().context("Failed to parse discussions")?;
-
-    // Filter to unresolved threads only
-    let unresolved = discussions
-        .into_iter()
-        .filter(|d| {
-            d["notes"]
-                .as_array()
-                .map(|notes| {
-                    notes.iter().any(|n| {
-                        n["resolvable"].as_bool().unwrap_or(false)
-                            && !n["resolved"].as_bool().unwrap_or(true)
-                    })
-                })
-                .unwrap_or(false)
-        })
-        .collect();
-
-    Ok(unresolved)
-}
-
-/// Fetch all discussion threads for an MR (not just unresolved).
-fn fetch_all_discussions(
-    payload: &claude_agent_server::ReviewPayload,
-    token: &str,
-) -> Result<Vec<serde_json::Value>> {
-    let encoded_project = urlencoding::encode(&payload.project);
-    let gitlab_url = &payload.gitlab_url;
-    let iid = &payload.mr_iid;
-    let url = format!(
-        "{gitlab_url}/api/v4/projects/{encoded_project}/merge_requests/{iid}/discussions?per_page=100"
-    );
-
-    let headers = claude_agent_server::gitlab::gitlab_auth_headers(token)?;
-    let client = reqwest::blocking::Client::builder()
-        .default_headers(headers)
-        .build()?;
-
-    let resp = client
-        .get(&url)
-        .send()
-        .context("Failed to fetch discussions")?;
-    if !resp.status().is_success() {
-        bail!(
-            "GitLab discussions API {} - {}",
-            resp.status(),
-            resp.text().unwrap_or_default()
-        );
-    }
-
-    let discussions: Vec<serde_json::Value> =
-        resp.json().context("Failed to parse discussions")?;
-    Ok(discussions)
-}
-
-/// Format discussions into text for the prompt.
-fn format_discussions(discussions: &[serde_json::Value]) -> String {
+/// Format GitHub review comments into text for the prompt.
+fn format_github_comments(comments: &[serde_json::Value]) -> String {
     let mut out = String::new();
-    for d in discussions {
-        let disc_id = d["id"].as_str().unwrap_or("?");
-        let notes = match d["notes"].as_array() {
-            Some(n) => n,
-            None => continue,
-        };
-        let first = match notes.first() {
-            Some(n) => n,
-            None => continue,
-        };
-
-        // File position
-        if let Some(pos) = first["position"].as_object() {
-            let path = pos
-                .get("new_path")
-                .or(pos.get("old_path"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            let line = pos
-                .get("new_line")
-                .or(pos.get("old_line"))
-                .and_then(|v| v.as_u64())
-                .map(|l| l.to_string())
-                .unwrap_or_default();
-            out.push_str(&format!("### Thread {disc_id} ({path}:{line})\n\n"));
-        } else {
-            out.push_str(&format!("### Thread {disc_id}\n\n"));
-        }
-
-        for note in notes {
-            let author = note["author"]["username"].as_str().unwrap_or("?");
-            let body = note["body"].as_str().unwrap_or("");
-            out.push_str(&format!("**@{author}**: {body}\n\n"));
-        }
+    for comment in comments {
+        let id = comment["id"].as_u64().unwrap_or(0);
+        let path = comment["path"].as_str().unwrap_or("?");
+        let line = comment["line"]
+            .as_u64()
+            .or_else(|| comment["original_line"].as_u64())
+            .map(|l| l.to_string())
+            .unwrap_or_default();
+        let author = comment["user"]["login"].as_str().unwrap_or("?");
+        let body = comment["body"].as_str().unwrap_or("");
+        out.push_str(&format!("### Comment {id} ({path}:{line})\n\n"));
+        out.push_str(&format!("**@{author}**: {body}\n\n"));
     }
     out
 }
 
 /// Fetch review comments from GitHub API for update reviews.
-fn fetch_github_review_comments(payload: &claude_agent_server::ReviewPayload, token: &str) -> Result<String> {
+fn fetch_github_review_comments(
+    payload: &claude_agent_server::ReviewPayload,
+    token: &str,
+) -> Result<String> {
     let repo = &payload.project;
     let number = &payload.mr_iid;
     let url = format!("https://api.github.com/repos/{repo}/pulls/{number}/comments?per_page=100");
@@ -608,32 +446,11 @@ fn fetch_github_review_comments(payload: &claude_agent_server::ReviewPayload, to
         .context("Failed to fetch GitHub review comments")?;
 
     if !resp.status().is_success() {
-        bail!(
-            "GitHub API {} - {}",
-            resp.status(),
-            resp.text().unwrap_or_default()
-        );
+        bail!("GitHub API {} - {}", resp.status(), resp.text().unwrap_or_default());
     }
 
     let comments: Vec<serde_json::Value> = resp.json().context("Failed to parse comments")?;
-    let mut out = String::new();
-
-    for comment in &comments {
-        let id = comment["id"].as_u64().unwrap_or(0);
-        let path = comment["path"].as_str().unwrap_or("?");
-        let line = comment["line"]
-            .as_u64()
-            .or_else(|| comment["original_line"].as_u64())
-            .map(|l| l.to_string())
-            .unwrap_or_default();
-        let author = comment["user"]["login"].as_str().unwrap_or("?");
-        let body = comment["body"].as_str().unwrap_or("");
-
-        out.push_str(&format!("### Comment {id} ({path}:{line})\n\n"));
-        out.push_str(&format!("**@{author}**: {body}\n\n"));
-    }
-
-    Ok(out)
+    Ok(format_github_comments(&comments))
 }
 
 #[cfg(test)]
@@ -641,43 +458,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_inject_git_credentials() {
-        let url = "https://gitlab.com/group/repo.git";
-        let token = "test-token";
-        let result = inject_git_credentials(url, token);
-        assert_eq!(
-            result,
-            "https://oauth2:test-token@gitlab.com/group/repo.git"
-        );
-    }
-
-    #[test]
-    fn test_inject_git_credentials_with_path() {
-        let url = "https://gitlab.com/Globalcomix/gc.git";
-        let token = "glpat-xxx";
-        let result = inject_git_credentials(url, token);
-        assert_eq!(
-            result,
-            "https://oauth2:glpat-xxx@gitlab.com/Globalcomix/gc.git"
-        );
-    }
-
-    #[test]
     fn test_inject_github_credentials() {
         let url = "https://github.com/owner/repo.git";
         let token = "ghs_xxx";
         let result = inject_github_credentials(url, token);
-        assert_eq!(
-            result,
-            "https://x-access-token:ghs_xxx@github.com/owner/repo.git"
-        );
+        assert_eq!(result, "https://x-access-token:ghs_xxx@github.com/owner/repo.git");
     }
 
     #[test]
-    fn test_inject_git_credentials_non_https() {
-        let url = "git@gitlab.com:group/repo.git";
-        let token = "test-token";
-        let result = inject_git_credentials(url, token);
-        assert_eq!(result, "git@gitlab.com:group/repo.git");
+    fn test_inject_github_credentials_non_https() {
+        let url = "git@github.com:owner/repo.git";
+        let token = "ghs_xxx";
+        let result = inject_github_credentials(url, token);
+        assert_eq!(result, "git@github.com:owner/repo.git");
     }
 }

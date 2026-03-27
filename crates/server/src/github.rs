@@ -6,7 +6,7 @@ use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use sha2::Sha256;
 
-use crate::gitlab::ReviewPayload;
+use crate::payload::ReviewPayload;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -94,7 +94,6 @@ impl PullRequestEvent {
 impl From<&PullRequestEvent> for ReviewPayload {
     fn from(event: &PullRequestEvent) -> Self {
         Self {
-            gitlab_url: String::new(), // Not used for GitHub
             project: event.repository.full_name.clone(),
             mr_iid: event.pull_request.number.to_string(),
             clone_url: event.repository.clone_url.clone(),
@@ -152,45 +151,39 @@ pub fn verify_signature(secret: &str, body: &[u8], signature: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn make_pull_request(draft: bool) -> PullRequest {
+        PullRequest {
+            id: 1,
+            number: 42,
+            title: "Test PR".into(),
+            body: Some("Description".into()),
+            state: "open".into(),
+            draft: Some(draft),
+            user: User { id: 1, login: "testuser".into() },
+            head: GitRef { ref_name: "feature-branch".into(), sha: "abc123".into(), repo: None },
+            base: GitRef { ref_name: "main".into(), sha: "def456".into(), repo: None },
+            html_url: "https://github.com/owner/repo/pull/42".into(),
+        }
+    }
+
+    fn make_repository() -> Repository {
+        Repository {
+            id: 1,
+            name: "repo".into(),
+            full_name: "owner/repo".into(),
+            clone_url: "https://github.com/owner/repo.git".into(),
+            html_url: "https://github.com/owner/repo".into(),
+            default_branch: Some("main".into()),
+        }
+    }
+
     fn make_event(action: &str, draft: bool) -> PullRequestEvent {
         PullRequestEvent {
             action: action.into(),
             number: 42,
-            pull_request: PullRequest {
-                id: 1,
-                number: 42,
-                title: "Test PR".into(),
-                body: Some("Description".into()),
-                state: "open".into(),
-                draft: Some(draft),
-                user: User {
-                    id: 1,
-                    login: "testuser".into(),
-                },
-                head: GitRef {
-                    ref_name: "feature-branch".into(),
-                    sha: "abc123".into(),
-                    repo: None,
-                },
-                base: GitRef {
-                    ref_name: "main".into(),
-                    sha: "def456".into(),
-                    repo: None,
-                },
-                html_url: "https://github.com/owner/repo/pull/42".into(),
-            },
-            repository: Repository {
-                id: 1,
-                name: "repo".into(),
-                full_name: "owner/repo".into(),
-                clone_url: "https://github.com/owner/repo.git".into(),
-                html_url: "https://github.com/owner/repo".into(),
-                default_branch: Some("main".into()),
-            },
-            sender: User {
-                id: 1,
-                login: "testuser".into(),
-            },
+            pull_request: make_pull_request(draft),
+            repository: make_repository(),
+            sender: User { id: 1, login: "testuser".into() },
         }
     }
 

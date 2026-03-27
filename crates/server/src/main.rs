@@ -14,7 +14,6 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod github;
-mod gitlab;
 mod jira;
 mod jira_token;
 mod payload;
@@ -83,7 +82,6 @@ fn init_logging() {
 async fn build_app_state() -> Result<AppState> {
     let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
     let webhook_secret = env::var("WEBHOOK_SECRET").context("WEBHOOK_SECRET not set")?;
-    let gitlab_token = env::var("GITLAB_TOKEN").ok();
 
     let queue = Queue::new(&redis_url)
         .await
@@ -101,7 +99,6 @@ async fn build_app_state() -> Result<AppState> {
         queue,
         webhook_secret,
         api_key: env::var("API_KEY").ok(),
-        gitlab_token,
         github_token: env::var("GITHUB_TOKEN").ok(),
         sentry_webhook_secret: env::var("SENTRY_WEBHOOK_SECRET").ok(),
         sentry_auth_token: env::var("SENTRY_AUTH_TOKEN").ok(),

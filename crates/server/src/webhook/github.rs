@@ -11,7 +11,7 @@ use axum::{
 use tracing::{debug, error, info, warn};
 
 use crate::github::{verify_signature, PullRequestEvent};
-use crate::gitlab::ReviewPayload;
+use crate::payload::ReviewPayload;
 
 use super::{ignored, queued, AppError, AppState, WebhookResponse};
 
@@ -21,41 +21,13 @@ pub(super) async fn github_webhook_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<(StatusCode, Json<WebhookResponse>), AppError> {
-    let signature = headers
-        .get("X-Hub-Signature-256")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    if !verify_signature(&state.webhook_secret, &body, signature) {
-        warn!("Invalid GitHub webhook signature");
-        return Err(AppError::Unauthorized);
-    }
-
-    let event_type = headers
-        .get("X-GitHub-Event")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+    verify_github_signature(&state.webhook_secret, &body, &headers)?;
+    let event_type = extract_event_type(&headers);
     if event_type != "pull_request" {
         return Ok(ignored(format!("Unsupported event type: {event_type}")));
     }
-
-    if let Ok(s) = std::str::from_utf8(&body) {
-        debug!(body = %s, "Raw GitHub webhook body");
-    }
-
-    let event: PullRequestEvent = serde_json::from_slice(&body).map_err(|e| {
-        if let Ok(s) = std::str::from_utf8(&body) {
-            error!(error = %e, body = %s, "Failed to parse GitHub webhook body");
-        }
-        AppError::BadRequest(format!("Invalid JSON: {e}"))
-    })?;
-
-    info!(
-        repo = %event.repository.full_name,
-        pr = %event.pull_request.number,
-        action = %event.action,
-        "Received GitHub webhook"
-    );
-
+    let event = parse_pull_request_event(&body)?;
+    log_received_event(&event);
     if !event.should_review() {
         return Ok(ignored("Event does not require review"));
     }
@@ -63,6 +35,50 @@ pub(super) async fn github_webhook_handler(
     let job_id = state.queue.push(payload).await.map_err(AppError::Redis)?;
     info!(job_id = %job_id, "Queued GitHub review job");
     Ok(queued(job_id))
+}
+
+fn verify_github_signature(
+    secret: &str,
+    body: &Bytes,
+    headers: &HeaderMap,
+) -> Result<(), AppError> {
+    let signature = headers
+        .get("X-Hub-Signature-256")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !verify_signature(secret, body, signature) {
+        warn!("Invalid GitHub webhook signature");
+        return Err(AppError::Unauthorized);
+    }
+    Ok(())
+}
+
+fn extract_event_type(headers: &HeaderMap) -> &str {
+    headers
+        .get("X-GitHub-Event")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+}
+
+fn parse_pull_request_event(body: &Bytes) -> Result<PullRequestEvent, AppError> {
+    if let Ok(s) = std::str::from_utf8(body) {
+        debug!(body = %s, "Raw GitHub webhook body");
+    }
+    serde_json::from_slice(body).map_err(|e| {
+        if let Ok(s) = std::str::from_utf8(body) {
+            error!(error = %e, body = %s, "Failed to parse GitHub webhook body");
+        }
+        AppError::BadRequest(format!("Invalid JSON: {e}"))
+    })
+}
+
+fn log_received_event(event: &PullRequestEvent) {
+    info!(
+        repo = %event.repository.full_name,
+        pr = %event.pull_request.number,
+        action = %event.action,
+        "Received GitHub webhook"
+    );
 }
 
 /// Fetch PR details from GitHub API and build a ReviewPayload.
@@ -97,7 +113,6 @@ pub(crate) async fn fetch_github_pr_payload(
             .unwrap_or("")
             .to_string(),
         action: "open".to_string(),
-        gitlab_url: String::new(),
         platform: "github".to_string(),
         trigger_comment: None,
     })

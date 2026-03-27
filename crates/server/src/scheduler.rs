@@ -53,7 +53,6 @@ fn build_env_vars(payload_b64: String, jira_access_token: Option<String>) -> Vec
             ..Default::default()
         },
         secret_env_var("CLAUDE_CODE_OAUTH_TOKEN", "claude-oauth-token", false),
-        secret_env_var("GITLAB_TOKEN", "gitlab-token", true),
         secret_env_var("GITHUB_TOKEN", "github-token", true),
         secret_env_var("SENTRY_AUTH_TOKEN", "sentry-auth-token", true),
     ];

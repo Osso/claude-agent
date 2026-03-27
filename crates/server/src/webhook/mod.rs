@@ -17,7 +17,6 @@ use crate::sentry::SentryProjectMapping as SentryMapping;
 
 mod api;
 mod github;
-mod gitlab;
 mod jira;
 mod sentry;
 mod tokens;
@@ -29,8 +28,6 @@ pub struct AppState {
     pub webhook_secret: String,
     /// API key for CLI access (defaults to webhook_secret if not set)
     pub api_key: Option<String>,
-    /// GitLab API token for fetching MR details
-    pub gitlab_token: Option<String>,
     /// GitHub API token (optional, for GitHub webhook support)
     pub github_token: Option<String>,
     /// Sentry webhook secret (optional, for Sentry webhook support)
@@ -80,14 +77,12 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health_handler))
-        .route("/webhook/gitlab", post(gitlab::gitlab_webhook_handler))
         .route("/webhook/github", post(github::github_webhook_handler))
         .route("/webhook/sentry", post(sentry::sentry_webhook_handler))
         .route("/webhook/jira", post(jira::jira_webhook_handler))
         .route("/api/stats", get(api::queue_stats_handler))
         .route("/api/failed", get(api::list_failed_handler))
         .route("/api/retry/{id}", post(api::retry_handler))
-        .route("/api/review", post(api::queue_review_handler))
         .route(
             "/api/review/github",
             post(api::queue_github_review_handler),
@@ -169,27 +164,19 @@ pub(crate) async fn branch_exists_on_platform(
     vcs_project: &str,
     branch_name: &str,
 ) -> Result<bool, AppError> {
-    let exists = if vcs_platform == "github" {
+    if vcs_platform == "github" {
         let token = state.github_token.as_ref().ok_or_else(|| {
             AppError::Internal("GITHUB_TOKEN not configured for GitHub repo".into())
         })?;
-        crate::github::branch_exists(vcs_project, branch_name, token)
+        let exists = crate::github::branch_exists(vcs_project, branch_name, token)
             .await
-            .unwrap_or(false)
+            .unwrap_or(false);
+        Ok(exists)
     } else {
-        let token = state.gitlab_token.as_ref().ok_or_else(|| {
-            AppError::Internal("GITLAB_TOKEN not configured for GitLab repo".into())
-        })?;
-        crate::gitlab::branch_exists(
-            "https://gitlab.com",
-            vcs_project,
-            branch_name,
-            token,
-        )
-        .await
-        .unwrap_or(false)
-    };
-    Ok(exists)
+        Err(AppError::Internal(format!(
+            "Unsupported VCS platform: {vcs_platform}. Only 'github' is supported."
+        )))
+    }
 }
 
 /// Application error type.

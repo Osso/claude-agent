@@ -27,9 +27,9 @@ pub enum AgentState {
 /// Context for a merge request review.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewContext {
-    /// GitLab/GitHub project URL or identifier.
+    /// GitHub project URL or identifier.
     pub project: String,
-    /// MR/PR identifier (iid for GitLab, number for GitHub).
+    /// PR number.
     pub mr_id: String,
     /// Source branch name.
     pub source_branch: String,

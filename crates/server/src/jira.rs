@@ -235,7 +235,7 @@ pub struct JiraProjectMapping {
     pub jira_project: String,
     /// Git clone URL
     pub clone_url: String,
-    /// VCS platform: "gitlab" or "github"
+    /// VCS platform: "github"
     pub vcs_platform: String,
     /// VCS project path (e.g., "Globalcomix/gc")
     pub vcs_project: String,
@@ -480,8 +480,8 @@ mod tests {
         let json = r#"[
             {
                 "jira_project": "GC",
-                "clone_url": "https://gitlab.com/Globalcomix/gc.git",
-                "vcs_platform": "gitlab",
+                "clone_url": "https://github.com/Globalcomix/gc.git",
+                "vcs_platform": "github",
                 "vcs_project": "Globalcomix/gc",
                 "target_branch": "master"
             }
@@ -490,6 +490,6 @@ mod tests {
         let mappings = parse_project_mappings(json).unwrap();
         assert_eq!(mappings.len(), 1);
         assert_eq!(mappings[0].jira_project, "GC");
-        assert_eq!(mappings[0].vcs_platform, "gitlab");
+        assert_eq!(mappings[0].vcs_platform, "github");
     }
 }

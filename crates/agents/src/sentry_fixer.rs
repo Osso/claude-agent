@@ -29,32 +29,10 @@ Resolves <SENTRY_URL>"
 git push origin HEAD
 ```
 
-## Creating the Merge Request / Pull Request
+## Creating the Pull Request
 
-After pushing, create the MR/PR:
+After pushing, create the PR:
 
-**For GitLab:**
-```bash
-gitlab mr create -p <PROJECT> --source sentry-fix/<SHORT_ID> --target <TARGET_BRANCH> \
-  --title "fix: <SHORT_ID> - <brief description>" \
-  --description "## Summary
-
-Fixes Sentry issue <SHORT_ID>: <ERROR_TITLE>
-
-## Root Cause
-
-<explain what caused the error>
-
-## Fix
-
-<explain what you changed>
-
-## Sentry Issue
-
-<SENTRY_URL>"
-```
-
-**For GitHub:**
 ```bash
 gh pr create --title "fix: <SHORT_ID> - <brief description>" \
   --body "## Summary
@@ -76,16 +54,16 @@ Fixes Sentry issue <SHORT_ID>: <ERROR_TITLE>
 
 ## Project Guidelines
 
-Before making changes, check if `.claude/mr.md` exists in the repo root. If it does, read it and follow those project-specific guidelines for code changes and MR creation.
+Before making changes, check if `.claude/mr.md` exists in the repo root. If it does, read it and follow those project-specific guidelines for code changes and PR creation.
 
 ## Rules
 
 - Only fix the specific error reported. Do NOT refactor, improve, or change other code.
 - If the fix requires significant design decisions, explain the options and pick the safest one.
-- If you cannot determine a fix, explain what investigation is needed and create an MR with your analysis.
+- If you cannot determine a fix, explain what investigation is needed and create a PR with your analysis.
 - Do not add new dependencies unless absolutely necessary.
 - Preserve existing code style and patterns.
-- Do NOT add self-review comments to MRs. Do not comment "LGTM" on your own MRs.
+- Do NOT add self-review comments to PRs. Do not comment "LGTM" on your own PRs.
 
 ## CRITICAL: Never Suppress Error Reporting
 
@@ -111,7 +89,7 @@ Similarly, never move errors from info-level lists to expected/ignored lists. If
 
 ## Do NOT Fix
 
-Some errors cannot be fixed with code changes alone. If the error falls into any of these categories, do NOT create a branch or MR. Instead, exit with a message explaining why you cannot fix it:
+Some errors cannot be fixed with code changes alone. If the error falls into any of these categories, do NOT create a branch or PR. Instead, exit with a message explaining why you cannot fix it:
 
 - **Missing database migrations**: Errors caused by missing columns, tables, or schema changes. These require a migration to be created and deployed by a human. Do not attempt workarounds like commenting out code that references the missing column.
 - **Infrastructure/deployment issues**: Errors caused by deployment timing, missing environment variables, misconfigured services, or DNS problems.
@@ -123,31 +101,21 @@ Some errors cannot be fixed with code changes alone. If the error falls into any
 
 - Read files with the Read tool
 - Edit files with the Edit tool
-- Run commands: git, gitlab mr, gh pr, test runners, linters
+- Run commands: git, gh pr, test runners, linters
 "###;
 
 /// Context for a Sentry fix job.
 #[derive(Debug, Clone)]
 pub struct SentryFixContext {
-    /// Sentry issue short ID (e.g., "WEB-123")
     pub short_id: String,
-    /// Error title
     pub title: String,
-    /// File/function where error occurred
     pub culprit: String,
-    /// Platform (php, python, javascript, etc.)
     pub platform: String,
-    /// Sentry web URL
     pub web_url: String,
-    /// Formatted stacktrace
     pub stacktrace: String,
-    /// Tags from the event
     pub tags: Vec<(String, String)>,
-    /// VCS project path
     pub vcs_project: String,
-    /// Target branch
     pub target_branch: String,
-    /// VCS platform (gitlab or github)
     pub vcs_platform: String,
 }
 
@@ -166,13 +134,21 @@ impl SentryFixerAgent {
         }
     }
 
-    /// Build the prompt for Claude.
     pub fn build_prompt(&self) -> String {
         let mut prompt = String::new();
-
         prompt.push_str(SENTRY_FIX_SYSTEM_PROMPT);
         prompt.push_str("\n\n---\n\n");
+        self.append_issue_details(&mut prompt);
+        self.append_error_details(&mut prompt);
+        self.append_task(&mut prompt);
+        prompt
+    }
 
+    pub fn system_prompt(&self) -> &'static str {
+        SENTRY_FIX_SYSTEM_PROMPT
+    }
+
+    fn append_issue_details(&self, prompt: &mut String) {
         prompt.push_str("## Sentry Issue Details\n\n");
         prompt.push_str(&format!("**Short ID**: {}\n", self.context.short_id));
         prompt.push_str(&format!("**Title**: {}\n", self.context.title));
@@ -189,33 +165,27 @@ impl SentryFixerAgent {
                 prompt.push_str(&format!("- {}: {}\n", key, value));
             }
         }
+    }
 
+    fn append_error_details(&self, prompt: &mut String) {
         prompt.push_str("\n## Error Details\n\n");
         if self.context.stacktrace.is_empty() {
             prompt.push_str("_No stacktrace available. Investigate based on the culprit location._\n");
         } else {
             prompt.push_str(&self.context.stacktrace);
         }
+    }
 
+    fn append_task(&self, prompt: &mut String) {
         prompt.push_str("\n\n## Task\n\n");
-        prompt.push_str(&format!(
-            "1. Analyze the error in `{}`\n",
-            self.context.culprit
-        ));
+        prompt.push_str(&format!("1. Analyze the error in `{}`\n", self.context.culprit));
         prompt.push_str("2. Read the relevant source files to understand the context\n");
         prompt.push_str("3. Implement a fix for the root cause\n");
         prompt.push_str(&format!(
             "4. Create branch `sentry-fix/{}` and commit the fix\n",
             self.context.short_id.to_lowercase()
         ));
-        prompt.push_str("5. Push and create an MR/PR\n");
-
-        prompt
-    }
-
-    /// Get the system prompt.
-    pub fn system_prompt(&self) -> &'static str {
-        SENTRY_FIX_SYSTEM_PROMPT
+        prompt.push_str("5. Push and create a PR\n");
     }
 }
 
@@ -235,9 +205,9 @@ mod tests {
                 ("environment".into(), "production".into()),
                 ("browser".into(), "Chrome".into()),
             ],
-            vcs_project: "Globalcomix/gc".into(),
+            vcs_project: "globalcomix/gc".into(),
             target_branch: "master".into(),
-            vcs_platform: "gitlab".into(),
+            vcs_platform: "github".into(),
         }
     }
 
@@ -250,7 +220,8 @@ mod tests {
         assert!(prompt.contains("NullPointerException"));
         assert!(prompt.contains("FooService.php"));
         assert!(prompt.contains("sentry-fix/web-123"));
-        assert!(prompt.contains("gitlab mr create"));
+        assert!(prompt.contains("gh pr create"));
+        assert!(!prompt.contains("gitlab mr create"));
         assert!(prompt.contains("environment: production"));
         assert!(prompt.contains("Never Suppress Error Reporting"));
         assert!(prompt.contains("Severity::info()"));
@@ -258,10 +229,7 @@ mod tests {
 
     #[test]
     fn test_build_prompt_github() {
-        let mut ctx = make_context();
-        ctx.vcs_platform = "github".into();
-
-        let agent = SentryFixerAgent::new(ctx, "/tmp/repo");
+        let agent = SentryFixerAgent::new(make_context(), "/tmp/repo");
         let prompt = agent.build_prompt();
 
         assert!(prompt.contains("gh pr create"));

@@ -19,7 +19,6 @@ base64 = { workspace = true }
 tokio = { workspace = true }
 
 reqwest = { workspace = true }
-urlencoding = { workspace = true }
 
 claude-agent-core = { workspace = true }
 claude-agent-agents = { workspace = true }

@@ -11,7 +11,6 @@ use axum::{
 use serde::Deserialize;
 use tracing::{info, warn};
 
-use crate::gitlab::fetch_review_payload;
 use crate::jira;
 use crate::payload::{JiraTicketPayload, SentryFixPayload};
 
@@ -85,52 +84,6 @@ pub(super) async fn retry_handler(
 }
 
 // -- Review endpoints --
-
-#[derive(Deserialize)]
-pub(super) struct QueueReviewRequest {
-    project: String,
-    mr_iid: u64,
-    #[serde(default = "default_gitlab_url")]
-    gitlab_url: String,
-    #[serde(default)]
-    action: Option<String>,
-}
-
-fn default_gitlab_url() -> String {
-    "https://gitlab.com".into()
-}
-
-pub(super) async fn queue_review_handler(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(req): Json<QueueReviewRequest>,
-) -> Result<impl IntoResponse, AppError> {
-    if !state.verify_api_key(&headers) {
-        warn!("Invalid API key for /api/review");
-        return Err(AppError::Unauthorized);
-    }
-
-    let gitlab_token = state
-        .gitlab_token
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("GITLAB_TOKEN not configured".into()))?;
-
-    let mut payload =
-        fetch_review_payload(&req.gitlab_url, &req.project, req.mr_iid, gitlab_token)
-            .await
-            .map_err(|e| AppError::Internal(format!("Failed to fetch MR from GitLab: {e}")))?;
-
-    if let Some(action) = &req.action {
-        payload.action = action.clone();
-    }
-
-    let job_id = state.queue.push(payload).await.map_err(AppError::Redis)?;
-    info!(job_id = %job_id, project = %req.project, mr_iid = %req.mr_iid, "Queued review via API");
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(serde_json::json!({ "status": "queued", "job_id": job_id })),
-    ))
-}
 
 #[derive(Deserialize)]
 pub(super) struct QueueGithubReviewRequest {

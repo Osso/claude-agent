@@ -25,10 +25,6 @@ pub(super) async fn check_tokens_handler(
     }
 
     let client = reqwest::Client::new();
-    let gitlab = match &state.gitlab_token {
-        Some(token) => check_gitlab_token(&client, token).await,
-        None => TokenStatus::not_configured(),
-    };
     let github = match &state.github_token {
         Some(token) => check_github_token(&client, token).await,
         None => TokenStatus::not_configured(),
@@ -47,7 +43,6 @@ pub(super) async fn check_tokens_handler(
     };
 
     Ok(Json(serde_json::json!({
-        "gitlab": gitlab,
         "github": github,
         "sentry": sentry,
         "claude": claude,
@@ -89,28 +84,6 @@ impl TokenStatus {
             info: None,
             error: Some(error),
         }
-    }
-}
-
-async fn check_gitlab_token(client: &reqwest::Client, token: &str) -> TokenStatus {
-    let resp = client
-        .get("https://gitlab.com/api/v4/user")
-        .header("PRIVATE-TOKEN", token)
-        .send()
-        .await;
-    match resp {
-        Ok(r) if r.status().is_success() => {
-            #[derive(Deserialize)]
-            struct User {
-                username: String,
-            }
-            match r.json::<User>().await {
-                Ok(u) => TokenStatus::valid(format!("@{}", u.username)),
-                Err(e) => TokenStatus::invalid(e.to_string()),
-            }
-        }
-        Ok(r) => TokenStatus::invalid(format!("{}", r.status())),
-        Err(e) => TokenStatus::invalid(e.to_string()),
     }
 }
 
