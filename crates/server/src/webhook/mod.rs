@@ -30,7 +30,7 @@ pub struct AppState {
     /// API key for CLI access (defaults to webhook_secret if not set)
     pub api_key: Option<String>,
     /// GitLab API token for fetching MR details
-    pub gitlab_token: String,
+    pub gitlab_token: Option<String>,
     /// GitHub API token (optional, for GitHub webhook support)
     pub github_token: Option<String>,
     /// Sentry webhook secret (optional, for Sentry webhook support)
@@ -177,11 +177,14 @@ pub(crate) async fn branch_exists_on_platform(
             .await
             .unwrap_or(false)
     } else {
+        let token = state.gitlab_token.as_ref().ok_or_else(|| {
+            AppError::Internal("GITLAB_TOKEN not configured for GitLab repo".into())
+        })?;
         crate::gitlab::branch_exists(
             "https://gitlab.com",
             vcs_project,
             branch_name,
-            &state.gitlab_token,
+            token,
         )
         .await
         .unwrap_or(false)

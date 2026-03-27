@@ -35,7 +35,7 @@ use webhook::{router, AppState};
 async fn main() -> Result<()> {
     init_logging();
 
-    const VERSION: &str = "2026.02.12";
+    const VERSION: &str = "2026.02.12.1";
     info!(version = VERSION, "Claude Agent Server starting");
 
     let state = build_app_state().await?;
@@ -83,7 +83,7 @@ fn init_logging() {
 async fn build_app_state() -> Result<AppState> {
     let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
     let webhook_secret = env::var("WEBHOOK_SECRET").context("WEBHOOK_SECRET not set")?;
-    let gitlab_token = env::var("GITLAB_TOKEN").context("GITLAB_TOKEN not set")?;
+    let gitlab_token = env::var("GITLAB_TOKEN").ok();
 
     let queue = Queue::new(&redis_url)
         .await

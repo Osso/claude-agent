@@ -25,7 +25,10 @@ pub(super) async fn check_tokens_handler(
     }
 
     let client = reqwest::Client::new();
-    let gitlab = check_gitlab_token(&client, &state.gitlab_token).await;
+    let gitlab = match &state.gitlab_token {
+        Some(token) => check_gitlab_token(&client, token).await,
+        None => TokenStatus::not_configured(),
+    };
     let github = match &state.github_token {
         Some(token) => check_github_token(&client, token).await,
         None => TokenStatus::not_configured(),

@@ -110,8 +110,13 @@ pub(super) async fn queue_review_handler(
         return Err(AppError::Unauthorized);
     }
 
+    let gitlab_token = state
+        .gitlab_token
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("GITLAB_TOKEN not configured".into()))?;
+
     let mut payload =
-        fetch_review_payload(&req.gitlab_url, &req.project, req.mr_iid, &state.gitlab_token)
+        fetch_review_payload(&req.gitlab_url, &req.project, req.mr_iid, gitlab_token)
             .await
             .map_err(|e| AppError::Internal(format!("Failed to fetch MR from GitLab: {e}")))?;
 
@@ -175,6 +180,22 @@ pub(super) struct QueueSentryFixRequest {
     issue_id: String,
 }
 
+fn find_sentry_mapping<'a>(
+    state: &'a AppState,
+    project: &str,
+) -> Result<&'a crate::sentry::SentryProjectMapping, AppError> {
+    state
+        .sentry_project_mappings
+        .iter()
+        .find(|m| m.sentry_project == project)
+        .ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "No project mapping for Sentry project: {}",
+                project
+            ))
+        })
+}
+
 pub(super) async fn queue_sentry_fix_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -185,31 +206,15 @@ pub(super) async fn queue_sentry_fix_handler(
         return Err(AppError::Unauthorized);
     }
 
-    let mapping = state
-        .sentry_project_mappings
-        .iter()
-        .find(|m| m.sentry_project == req.project)
-        .ok_or_else(|| {
-            AppError::BadRequest(format!(
-                "No project mapping for Sentry project: {}",
-                req.project
-            ))
-        })?;
-
+    let mapping = find_sentry_mapping(&state, &req.project)?;
     let (issue, short_id) = fetch_sentry_issue_details(&state, &req).await?;
-
     let branch_name = format!("sentry-fix/{}", short_id.to_lowercase());
+
     if branch_exists_on_platform(&state, &mapping.vcs_platform, &mapping.vcs_project, &branch_name)
         .await?
     {
         info!(branch = %branch_name, issue = %short_id, "Fix branch already exists, skipping");
-        return Ok((
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "status": "skipped",
-                "message": format!("Branch {} already exists", branch_name),
-            })),
-        ));
+        return Ok(skipped_branch_response(&branch_name));
     }
 
     let payload = build_sentry_api_payload(&req, &issue, &short_id, mapping);
@@ -219,6 +224,18 @@ pub(super) async fn queue_sentry_fix_handler(
         StatusCode::ACCEPTED,
         Json(serde_json::json!({ "status": "queued", "job_id": job_id })),
     ))
+}
+
+fn skipped_branch_response(
+    branch_name: &str,
+) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "skipped",
+            "message": format!("Branch {} already exists", branch_name),
+        })),
+    )
 }
 
 async fn fetch_sentry_issue_details(
@@ -262,15 +279,7 @@ fn build_sentry_api_payload(
             .as_str()
             .unwrap_or("error")
             .to_string(),
-        web_url: issue["permalink"]
-            .as_str()
-            .map(String::from)
-            .unwrap_or_else(|| {
-                format!(
-                    "https://sentry.io/organizations/{}/issues/{}/",
-                    req.organization, req.issue_id
-                )
-            }),
+        web_url: sentry_web_url(issue, &req.organization, &req.issue_id),
         project_slug: req.project.clone(),
         organization: req.organization.clone(),
         clone_url: mapping.clone_url.clone(),
@@ -278,6 +287,18 @@ fn build_sentry_api_payload(
         vcs_platform: mapping.vcs_platform.clone(),
         vcs_project: mapping.vcs_project.clone(),
     }
+}
+
+fn sentry_web_url(issue: &serde_json::Value, org: &str, issue_id: &str) -> String {
+    issue["permalink"]
+        .as_str()
+        .map(String::from)
+        .unwrap_or_else(|| {
+            format!(
+                "https://sentry.io/organizations/{}/issues/{}/",
+                org, issue_id
+            )
+        })
 }
 
 // -- Jira fix endpoint --
@@ -291,6 +312,22 @@ pub(super) struct QueueJiraFixRequest {
 
 fn default_jira_url() -> String {
     "https://globalcomix.atlassian.net".into()
+}
+
+fn find_jira_mapping<'a>(
+    state: &'a AppState,
+    project_key: &str,
+) -> Result<&'a crate::jira::JiraProjectMapping, AppError> {
+    state
+        .jira_project_mappings
+        .iter()
+        .find(|m| m.jira_project == project_key)
+        .ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "No project mapping for Jira project: {}",
+                project_key
+            ))
+        })
 }
 
 pub(super) async fn queue_jira_fix_handler(
@@ -308,29 +345,14 @@ pub(super) async fn queue_jira_fix_handler(
         .split('-')
         .next()
         .ok_or_else(|| AppError::BadRequest("Invalid issue key format".into()))?;
-    let mapping = state
-        .jira_project_mappings
-        .iter()
-        .find(|m| m.jira_project == project_key)
-        .ok_or_else(|| {
-            AppError::BadRequest(format!(
-                "No project mapping for Jira project: {}",
-                project_key
-            ))
-        })?;
+    let mapping = find_jira_mapping(&state, project_key)?;
 
     let branch_name = format!("jira-fix/{}", req.issue_key.to_lowercase());
     if branch_exists_on_platform(&state, &mapping.vcs_platform, &mapping.vcs_project, &branch_name)
         .await?
     {
         info!(branch = %branch_name, issue = %req.issue_key, "Fix branch already exists, skipping");
-        return Ok((
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "status": "skipped",
-                "message": format!("Branch {} already exists", branch_name),
-            })),
-        ));
+        return Ok(skipped_branch_response(&branch_name));
     }
 
     let issue = fetch_jira_issue(&state, &req).await?;
@@ -383,15 +405,11 @@ fn build_jira_api_payload(
     mapping: &crate::jira::JiraProjectMapping,
 ) -> JiraTicketPayload {
     let fields = &issue["fields"];
-    let description = fields
-        .get("description")
-        .map(jira::extract_text_from_adf);
-
     JiraTicketPayload {
         issue_key: req.issue_key.clone(),
         issue_id: issue["id"].as_str().unwrap_or("").to_string(),
         summary: fields["summary"].as_str().unwrap_or("").to_string(),
-        description,
+        description: fields.get("description").map(jira::extract_text_from_adf),
         issue_type: fields["issuetype"]["name"]
             .as_str()
             .unwrap_or("Unknown")
@@ -401,14 +419,7 @@ fn build_jira_api_payload(
             .as_str()
             .unwrap_or("Unknown")
             .to_string(),
-        labels: fields["labels"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default(),
+        labels: extract_labels(fields),
         web_url: format!(
             "{}/browse/{}",
             req.jira_url.trim_end_matches('/'),
@@ -422,4 +433,15 @@ fn build_jira_api_payload(
         vcs_platform: mapping.vcs_platform.clone(),
         vcs_project: mapping.vcs_project.clone(),
     }
+}
+
+fn extract_labels(fields: &serde_json::Value) -> Vec<String> {
+    fields["labels"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
 }

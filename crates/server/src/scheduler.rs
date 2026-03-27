@@ -29,6 +29,21 @@ fn worker_image() -> String {
 }
 const JOB_TTL_SECONDS: i32 = 900; // 15 minutes after completion
 
+fn secret_env_var(name: &str, key: &str, optional: bool) -> EnvVar {
+    EnvVar {
+        name: name.into(),
+        value_from: Some(EnvVarSource {
+            secret_key_ref: Some(SecretKeySelector {
+                name: "claude-agent-secrets".into(),
+                key: key.into(),
+                optional: Some(optional),
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
 /// Build environment variables for worker container.
 fn build_env_vars(payload_b64: String, jira_access_token: Option<String>) -> Vec<EnvVar> {
     let mut env_vars = vec![
@@ -37,57 +52,12 @@ fn build_env_vars(payload_b64: String, jira_access_token: Option<String>) -> Vec
             value: Some(payload_b64),
             ..Default::default()
         },
-        EnvVar {
-            name: "CLAUDE_CODE_OAUTH_TOKEN".into(),
-            value_from: Some(EnvVarSource {
-                secret_key_ref: Some(SecretKeySelector {
-                    name: "claude-agent-secrets".into(),
-                    key: "claude-oauth-token".into(),
-                    optional: Some(false),
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        },
-        EnvVar {
-            name: "GITLAB_TOKEN".into(),
-            value_from: Some(EnvVarSource {
-                secret_key_ref: Some(SecretKeySelector {
-                    name: "claude-agent-secrets".into(),
-                    key: "gitlab-token".into(),
-                    optional: Some(false),
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        },
-        EnvVar {
-            name: "GITHUB_TOKEN".into(),
-            value_from: Some(EnvVarSource {
-                secret_key_ref: Some(SecretKeySelector {
-                    name: "claude-agent-secrets".into(),
-                    key: "github-token".into(),
-                    optional: Some(true),
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        },
-        EnvVar {
-            name: "SENTRY_AUTH_TOKEN".into(),
-            value_from: Some(EnvVarSource {
-                secret_key_ref: Some(SecretKeySelector {
-                    name: "claude-agent-secrets".into(),
-                    key: "sentry-auth-token".into(),
-                    optional: Some(true),
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        },
+        secret_env_var("CLAUDE_CODE_OAUTH_TOKEN", "claude-oauth-token", false),
+        secret_env_var("GITLAB_TOKEN", "gitlab-token", true),
+        secret_env_var("GITHUB_TOKEN", "github-token", true),
+        secret_env_var("SENTRY_AUTH_TOKEN", "sentry-auth-token", true),
     ];
 
-    // Add Jira access token if available
     if let Some(token) = jira_access_token {
         env_vars.push(EnvVar {
             name: "JIRA_ACCESS_TOKEN".into(),
@@ -132,62 +102,15 @@ impl Scheduler {
         *self.running.lock().await = true;
 
         while *self.running.lock().await {
-            // Wait for any running job to finish before popping
             if self.has_running_job().await {
                 debug!("Job already running, waiting");
                 tokio::time::sleep(Duration::from_secs(10)).await;
                 continue;
             }
 
-            // Try to get next item from queue (blocks for 30s if empty)
             match self.queue.pop(30).await {
-                Ok(Some(item)) => {
-                    info!(id = %item.id, "Processing queue item");
-
-                    // Mark as processing
-                    if let Err(e) = self.queue.mark_processing(&item).await {
-                        error!(error = %e, "Failed to mark item as processing");
-                        continue;
-                    }
-
-                    // Spawn K8s Job
-                    match self.spawn_job(&item).await {
-                        Ok(job_name) => {
-                            info!(job = %job_name, "Spawned review job");
-
-                            // Wait for job completion
-                            match self.wait_for_job(&job_name).await {
-                                Ok(success) => {
-                                    if success {
-                                        let _ = self.queue.mark_completed(&item.id).await;
-                                    } else {
-                                        let _ = self
-                                            .queue
-                                            .mark_failed(item, "Job failed")
-                                            .await;
-                                    }
-                                }
-                                Err(e) => {
-                                    error!(error = %e, "Error waiting for job");
-                                    let _ = self
-                                        .queue
-                                        .mark_failed(item, &format!("Wait error: {e}"))
-                                        .await;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            error!(error = %e, "Failed to spawn job");
-                            let _ = self
-                                .queue
-                                .mark_failed(item, &format!("Spawn error: {e}"))
-                                .await;
-                        }
-                    }
-                }
-                Ok(None) => {
-                    // Queue empty, BLPOP timed out - continue waiting
-                }
+                Ok(Some(item)) => self.process_item(item).await,
+                Ok(None) => {}
                 Err(e) => {
                     error!(error = %e, "Failed to pop from queue");
                     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -196,6 +119,47 @@ impl Scheduler {
         }
 
         info!("Scheduler stopped");
+    }
+
+    async fn process_item(&self, item: QueueItem) {
+        info!(id = %item.id, "Processing queue item");
+
+        if let Err(e) = self.queue.mark_processing(&item).await {
+            error!(error = %e, "Failed to mark item as processing");
+            return;
+        }
+
+        match self.spawn_job(&item).await {
+            Ok(job_name) => {
+                info!(job = %job_name, "Spawned review job");
+                self.await_job_completion(&job_name, item).await;
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to spawn job");
+                let _ = self
+                    .queue
+                    .mark_failed(item, &format!("Spawn error: {e}"))
+                    .await;
+            }
+        }
+    }
+
+    async fn await_job_completion(&self, job_name: &str, item: QueueItem) {
+        match self.wait_for_job(job_name).await {
+            Ok(true) => {
+                let _ = self.queue.mark_completed(&item.id).await;
+            }
+            Ok(false) => {
+                let _ = self.queue.mark_failed(item, "Job failed").await;
+            }
+            Err(e) => {
+                error!(error = %e, "Error waiting for job");
+                let _ = self
+                    .queue
+                    .mark_failed(item, &format!("Wait error: {e}"))
+                    .await;
+            }
+        }
     }
 
     /// Stop the scheduler.
@@ -212,7 +176,6 @@ impl Scheduler {
             Ok(jobs) => {
                 for job in jobs.items {
                     if let Some(status) = job.status {
-                        // Job is running if active > 0
                         if status.active.unwrap_or(0) > 0 {
                             return true;
                         }
@@ -227,36 +190,21 @@ impl Scheduler {
         }
     }
 
-    /// Spawn a K8s Job for the review.
-    async fn spawn_job(&self, item: &QueueItem) -> Result<String, kube::Error> {
-        // Job names must be lowercase RFC 1123 subdomains
-        let job_name = format!(
-            "{}-{}-{}",
-            item.payload.job_prefix(),
-            item.payload.issue_id().to_lowercase(),
-            &item.id[..8]
-        );
-
-        // Encode payload as base64
-        let payload_json = serde_json::to_string(&item.payload).unwrap();
-        let payload_b64 = base64::engine::general_purpose::STANDARD.encode(&payload_json);
-
-        // Get fresh Jira access token if configured
-        let jira_access_token = if let Some(ref manager) = self.jira_token_manager {
-            match manager.get_access_token().await {
-                Ok(token) => Some(token),
-                Err(e) => {
-                    warn!(error = %e, "Failed to get Jira access token, job will run without Jira integration");
-                    None
-                }
+    async fn get_jira_access_token(&self) -> Option<String> {
+        let manager = self.jira_token_manager.as_ref()?;
+        match manager.get_access_token().await {
+            Ok(token) => Some(token),
+            Err(e) => {
+                warn!(error = %e, "Failed to get Jira access token, job will run without Jira integration");
+                None
             }
-        } else {
-            None
-        };
+        }
+    }
 
-        let job = Job {
+    fn build_job_manifest(&self, job_name: &str, item: &QueueItem, env_vars: Vec<EnvVar>) -> Job {
+        Job {
             metadata: kube::api::ObjectMeta {
-                name: Some(job_name.clone()),
+                name: Some(job_name.to_string()),
                 namespace: Some(NAMESPACE.into()),
                 labels: Some(BTreeMap::from([
                     ("app".to_string(), "claude-review".to_string()),
@@ -264,65 +212,44 @@ impl Scheduler {
                 ])),
                 ..Default::default()
             },
-            spec: Some(JobSpec {
-                ttl_seconds_after_finished: Some(JOB_TTL_SECONDS),
-                active_deadline_seconds: Some(900), // 15 minute hard timeout enforced by K8s
-                backoff_limit: Some(0), // No retries
-                template: PodTemplateSpec {
-                    metadata: Some(kube::api::ObjectMeta {
-                        labels: Some(BTreeMap::from([(
-                            "app".to_string(),
-                            "claude-review".to_string(),
-                        )])),
-                        ..Default::default()
-                    }),
-                    spec: Some(PodSpec {
-                        restart_policy: Some("Never".into()),
-                        security_context: Some(
-                            k8s_openapi::api::core::v1::PodSecurityContext {
-                                run_as_user: Some(1000),
-                                run_as_group: Some(1000),
-                                fs_group: Some(1000),
-                                ..Default::default()
-                            },
-                        ),
-                        containers: vec![Container {
-                            name: "worker".into(),
-                            image: Some(worker_image()),
-                            env: Some(build_env_vars(payload_b64, jira_access_token)),
-                            volume_mounts: Some(vec![VolumeMount {
-                                name: "workdir".into(),
-                                mount_path: "/work".into(),
-                                ..Default::default()
-                            }]),
-                            resources: Some(ResourceRequirements {
-                                requests: Some(BTreeMap::from([
-                                    ("memory".to_string(), Quantity("512Mi".into())),
-                                    ("cpu".to_string(), Quantity("500m".into())),
-                                ])),
-                                limits: Some(BTreeMap::from([
-                                    ("memory".to_string(), Quantity("4Gi".into())),
-                                    ("cpu".to_string(), Quantity("2000m".into())),
-                                ])),
-                                ..Default::default()
-                            }),
-                            ..Default::default()
-                        }],
-                        volumes: Some(vec![Volume {
-                            name: "workdir".into(),
-                            empty_dir: Some(EmptyDirVolumeSource {
-                                size_limit: Some(Quantity("2Gi".into())),
-                                ..Default::default()
-                            }),
-                            ..Default::default()
-                        }]),
-                        ..Default::default()
-                    }),
-                },
-                ..Default::default()
-            }),
+            spec: Some(self.build_job_spec(env_vars)),
             ..Default::default()
-        };
+        }
+    }
+
+    fn build_job_spec(&self, env_vars: Vec<EnvVar>) -> JobSpec {
+        JobSpec {
+            ttl_seconds_after_finished: Some(JOB_TTL_SECONDS),
+            active_deadline_seconds: Some(900),
+            backoff_limit: Some(0),
+            template: PodTemplateSpec {
+                metadata: Some(kube::api::ObjectMeta {
+                    labels: Some(BTreeMap::from([(
+                        "app".to_string(),
+                        "claude-review".to_string(),
+                    )])),
+                    ..Default::default()
+                }),
+                spec: Some(build_pod_spec(env_vars)),
+            },
+            ..Default::default()
+        }
+    }
+
+    /// Spawn a K8s Job for the review.
+    async fn spawn_job(&self, item: &QueueItem) -> Result<String, kube::Error> {
+        let job_name = format!(
+            "{}-{}-{}",
+            item.payload.job_prefix(),
+            item.payload.issue_id().to_lowercase(),
+            &item.id[..8]
+        );
+
+        let payload_json = serde_json::to_string(&item.payload).unwrap();
+        let payload_b64 = base64::engine::general_purpose::STANDARD.encode(&payload_json);
+        let jira_access_token = self.get_jira_access_token().await;
+        let env_vars = build_env_vars(payload_b64, jira_access_token);
+        let job = self.build_job_manifest(&job_name, item, env_vars);
 
         self.jobs_api.create(&PostParams::default(), &job).await?;
         Ok(job_name)
@@ -330,14 +257,13 @@ impl Scheduler {
 
     /// Wait for a job to complete.
     async fn wait_for_job(&self, job_name: &str) -> Result<bool, kube::Error> {
-        let timeout = Duration::from_secs(900); // 15 minutes max
+        let timeout = Duration::from_secs(900);
         let start = std::time::Instant::now();
         let mut not_found_count = 0;
 
         loop {
             if start.elapsed() > timeout {
                 warn!(job = %job_name, "Job timed out");
-                // Try to delete the job
                 let _ = self
                     .jobs_api
                     .delete(job_name, &DeleteParams::default())
@@ -345,42 +271,95 @@ impl Scheduler {
                 return Ok(false);
             }
 
-            match self.jobs_api.get(job_name).await {
-                Ok(job) => {
-                    not_found_count = 0; // Reset counter on success
-                    if let Some(status) = job.status {
-                        // Check if succeeded
-                        if status.succeeded.unwrap_or(0) > 0 {
-                            info!(job = %job_name, "Job succeeded");
-                            return Ok(true);
-                        }
-
-                        // Check if failed
-                        if status.failed.unwrap_or(0) > 0 {
-                            warn!(job = %job_name, "Job failed");
-                            return Ok(false);
-                        }
-
-                        // Still running
-                        debug!(job = %job_name, "Job still running");
-                    }
-                }
-                Err(kube::Error::Api(ref err)) if err.code == 404 => {
-                    not_found_count += 1;
-                    warn!(job = %job_name, count = not_found_count, "Job not found");
-                    // If job is consistently not found, treat as deleted/failed
-                    if not_found_count >= 3 {
-                        error!(job = %job_name, "Job disappeared, marking as failed");
-                        return Ok(false);
-                    }
-                }
-                Err(e) => {
-                    error!(error = %e, job = %job_name, "Failed to get job status");
-                }
+            match self.check_job_status(job_name, &mut not_found_count).await {
+                Some(result) => return result,
+                None => tokio::time::sleep(Duration::from_secs(5)).await,
             }
-
-            tokio::time::sleep(Duration::from_secs(5)).await;
         }
+    }
+
+    async fn check_job_status(
+        &self,
+        job_name: &str,
+        not_found_count: &mut u32,
+    ) -> Option<Result<bool, kube::Error>> {
+        match self.jobs_api.get(job_name).await {
+            Ok(job) => {
+                *not_found_count = 0;
+                if let Some(status) = job.status {
+                    if status.succeeded.unwrap_or(0) > 0 {
+                        info!(job = %job_name, "Job succeeded");
+                        return Some(Ok(true));
+                    }
+                    if status.failed.unwrap_or(0) > 0 {
+                        warn!(job = %job_name, "Job failed");
+                        return Some(Ok(false));
+                    }
+                    debug!(job = %job_name, "Job still running");
+                }
+                None
+            }
+            Err(kube::Error::Api(ref err)) if err.code == 404 => {
+                *not_found_count += 1;
+                warn!(job = %job_name, count = *not_found_count, "Job not found");
+                if *not_found_count >= 3 {
+                    error!(job = %job_name, "Job disappeared, marking as failed");
+                    return Some(Ok(false));
+                }
+                None
+            }
+            Err(e) => {
+                error!(error = %e, job = %job_name, "Failed to get job status");
+                None
+            }
+        }
+    }
+}
+
+fn build_worker_container(env_vars: Vec<EnvVar>) -> Container {
+    Container {
+        name: "worker".into(),
+        image: Some(worker_image()),
+        env: Some(env_vars),
+        volume_mounts: Some(vec![VolumeMount {
+            name: "workdir".into(),
+            mount_path: "/work".into(),
+            ..Default::default()
+        }]),
+        resources: Some(ResourceRequirements {
+            requests: Some(BTreeMap::from([
+                ("memory".to_string(), Quantity("512Mi".into())),
+                ("cpu".to_string(), Quantity("500m".into())),
+            ])),
+            limits: Some(BTreeMap::from([
+                ("memory".to_string(), Quantity("4Gi".into())),
+                ("cpu".to_string(), Quantity("2000m".into())),
+            ])),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+fn build_pod_spec(env_vars: Vec<EnvVar>) -> PodSpec {
+    PodSpec {
+        restart_policy: Some("Never".into()),
+        security_context: Some(k8s_openapi::api::core::v1::PodSecurityContext {
+            run_as_user: Some(1000),
+            run_as_group: Some(1000),
+            fs_group: Some(1000),
+            ..Default::default()
+        }),
+        containers: vec![build_worker_container(env_vars)],
+        volumes: Some(vec![Volume {
+            name: "workdir".into(),
+            empty_dir: Some(EmptyDirVolumeSource {
+                size_limit: Some(Quantity("2Gi".into())),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]),
+        ..Default::default()
     }
 }
 
@@ -435,17 +414,14 @@ mod tests {
 
     #[test]
     fn test_not_found_counter_threshold() {
-        // Simulate the not_found counter behavior
         let threshold = 3;
         let mut not_found_count = 0;
 
-        // First two 404s should not trigger failure
         for _ in 0..2 {
             not_found_count += 1;
             assert!(not_found_count < threshold, "Should not fail yet");
         }
 
-        // Third 404 should trigger failure
         not_found_count += 1;
         assert!(not_found_count >= threshold, "Should fail after 3 not-founds");
     }

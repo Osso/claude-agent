@@ -140,11 +140,14 @@ async fn lookup_pipeline_payload(
         .collect::<Vec<_>>()
         .join("/");
 
+    let token = state.gitlab_token.as_ref().ok_or_else(|| {
+        AppError::Internal("GITLAB_TOKEN not configured".into())
+    })?;
     match fetch_mr_by_branch(
         &gitlab_url,
         &event.project.path_with_namespace,
         &event.object_attributes.ref_name,
-        &state.gitlab_token,
+        token,
     )
     .await
     {
@@ -225,12 +228,15 @@ async fn build_note_payload(
         .collect::<Vec<_>>()
         .join("/");
 
+    let token = state.gitlab_token.as_ref().ok_or_else(|| {
+        AppError::Internal("GITLAB_TOKEN not configured".into())
+    })?;
     let mr = event.merge_request.as_ref().unwrap();
     let mut payload = fetch_review_payload(
         &gitlab_url,
         &event.project.path_with_namespace,
         mr.iid as u64,
-        &state.gitlab_token,
+        token,
     )
     .await
     .map_err(|e| {
