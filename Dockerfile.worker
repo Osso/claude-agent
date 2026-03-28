@@ -28,7 +28,6 @@ FROM rust:1.92-bookworm AS cli-builder
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo install --git https://github.com/Osso/gitlab-cli --root /cli && \
     cargo install --git https://github.com/Osso/github-cli --root /cli && \
     cargo install --git https://github.com/Osso/sentry-cli --root /cli
 
@@ -37,7 +36,7 @@ FROM rust:1.92-bookworm AS mago-builder
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo install mago --root /build
+    cargo install mago@1.2.2 --locked --root /build
 
 # Build jira CLI (Go)
 FROM golang:1.24-bookworm AS jira-builder
@@ -80,7 +79,6 @@ RUN groupadd -g 1000 app && \
 WORKDIR /app
 
 COPY --from=builder /build/claude-agent-worker-bin /app/claude-agent-worker
-COPY --from=cli-builder /cli/bin/gitlab /usr/local/bin/gitlab
 COPY --from=cli-builder /cli/bin/github /usr/local/bin/github
 COPY --from=cli-builder /cli/bin/sentry /usr/local/bin/sentry
 COPY --from=mago-builder /build/bin/mago /usr/local/bin/mago
