@@ -120,24 +120,7 @@ fn log_claude_output(output: &ClaudeOutput) {
             info!(subtype = %subtype, "Claude session started");
         }
         ClaudeOutput::Assistant { subtype, message } => {
-            if let (Some(subtype), Some(msg)) = (subtype, message) {
-                match subtype {
-                    crate::output::AssistantSubtype::ToolUse => {
-                        for block in &msg.content {
-                            if let ContentBlock::ToolUse { name, .. } = block {
-                                info!(tool = %name, "Claude using tool");
-                            }
-                        }
-                    }
-                    crate::output::AssistantSubtype::Text => {
-                        if let Some(text) = output.text() {
-                            let preview: String = text.chars().take(100).collect();
-                            debug!(preview = %preview, "Claude text output");
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            log_assistant_output(subtype.as_ref(), message.as_ref(), output);
         }
         ClaudeOutput::Result {
             is_error,
@@ -158,6 +141,38 @@ fn log_claude_output(output: &ClaudeOutput) {
         }
         _ => {}
     }
+}
+
+fn log_assistant_output(
+    subtype: Option<&crate::output::AssistantSubtype>,
+    message: Option<&crate::output::AssistantMessage>,
+    output: &ClaudeOutput,
+) {
+    let (Some(subtype), Some(message)) = (subtype, message) else {
+        return;
+    };
+
+    match subtype {
+        crate::output::AssistantSubtype::ToolUse => log_tool_use_blocks(&message.content),
+        crate::output::AssistantSubtype::Text => log_text_preview(output),
+        _ => {}
+    }
+}
+
+fn log_tool_use_blocks(blocks: &[ContentBlock]) {
+    for block in blocks {
+        if let ContentBlock::ToolUse { name, .. } = block {
+            info!(tool = %name, "Claude using tool");
+        }
+    }
+}
+
+fn log_text_preview(output: &ClaudeOutput) {
+    let Some(text) = output.text() else {
+        return;
+    };
+    let preview: String = text.chars().take(100).collect();
+    debug!(preview = %preview, "Claude text output");
 }
 
 impl Drop for ClaudeProcess {
@@ -219,25 +234,25 @@ fn convert_output(output: ClaudeOutput) -> Option<ClaudeResponse> {
     match output {
         ClaudeOutput::Assistant {
             message: Some(msg), ..
-        } => {
-            for block in msg.content {
-                match block {
-                    ContentBlock::Text { text } => {
-                        return Some(ClaudeResponse::Text(text));
-                    }
-                    ContentBlock::ToolUse { id, name, input } => {
-                        return Some(ClaudeResponse::ToolUse { id, name, input });
-                    }
-                    _ => {}
-                }
-            }
-            None
-        }
+        } => convert_assistant_message(msg.content),
         ClaudeOutput::Result {
             subtype, result, ..
         } => Some(ClaudeResponse::Result { subtype, result }),
         _ => None,
     }
+}
+
+fn convert_assistant_message(blocks: Vec<ContentBlock>) -> Option<ClaudeResponse> {
+    for block in blocks {
+        match block {
+            ContentBlock::Text { text } => return Some(ClaudeResponse::Text(text)),
+            ContentBlock::ToolUse { id, name, input } => {
+                return Some(ClaudeResponse::ToolUse { id, name, input });
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]

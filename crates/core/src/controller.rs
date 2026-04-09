@@ -179,17 +179,8 @@ where
         self.state.record_tool_call();
 
         let action = match self.parse_action(name, input) {
-            Ok(a) => a,
-            Err(e) => {
-                warn!(error = %e, tool = %name, "Failed to parse action");
-                let obs = Observation::Error {
-                    message: format!("Invalid tool call: {e}"),
-                };
-                let event = Event::observation(obs);
-                self.state.add_event(event.clone());
-                self.stream.add_event(event).await;
-                return Ok(None);
-            }
+            Ok(action) => action,
+            Err(error) => return self.handle_invalid_action(name, error).await,
         };
 
         if let Action::Finish { result } = action {
@@ -219,6 +210,21 @@ where
         Ok(None)
     }
 
+    async fn handle_invalid_action(
+        &mut self,
+        name: &str,
+        error: Error,
+    ) -> Result<Option<ReviewResult>, Error> {
+        warn!(error = %error, tool = %name, "Failed to parse action");
+        let obs = Observation::Error {
+            message: format!("Invalid tool call: {error}"),
+        };
+        let event = Event::observation(obs);
+        self.state.add_event(event.clone());
+        self.stream.add_event(event).await;
+        Ok(None)
+    }
+
     fn build_messages(&self) -> Vec<Message> {
         let mut messages = vec![Message {
             role: MessageRole::System,
@@ -226,34 +232,8 @@ where
         }];
 
         for event in &self.state.history {
-            match &event.payload {
-                EventPayload::Message { role, content } => {
-                    let msg_role = match role.as_str() {
-                        "user" => MessageRole::User,
-                        "assistant" => MessageRole::Assistant,
-                        _ => continue,
-                    };
-                    messages.push(Message {
-                        role: msg_role,
-                        content: content.clone(),
-                    });
-                }
-                EventPayload::Action(action) => {
-                    // Actions are sent to Claude as tool results
-                    let content = format!("Tool call: {}", serde_json::to_string(action).unwrap());
-                    messages.push(Message {
-                        role: MessageRole::Assistant,
-                        content,
-                    });
-                }
-                EventPayload::Observation(obs) => {
-                    // Observations are tool results
-                    let content = serde_json::to_string(obs).unwrap();
-                    messages.push(Message {
-                        role: MessageRole::User,
-                        content: format!("Tool result: {content}"),
-                    });
-                }
+            if let Some(message) = event_to_message(event) {
+                messages.push(message);
             }
         }
 
@@ -263,32 +243,20 @@ where
     fn parse_action(&self, name: &str, input: &serde_json::Value) -> Result<Action, Error> {
         match name {
             "read_file" => {
-                let path = input
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| Error::InvalidToolInput("missing path".into()))?;
+                let path = required_string(input, "path")?;
                 Ok(Action::ReadFile { path: path.into() })
             }
             "run_command" => {
-                let cmd = input
-                    .get("cmd")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| Error::InvalidToolInput("missing cmd".into()))?;
+                let cmd = required_string(input, "cmd")?;
                 Ok(Action::RunCommand { cmd: cmd.into() })
             }
             "post_comment" => {
-                let body = input
-                    .get("body")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| Error::InvalidToolInput("missing body".into()))?;
+                let body = required_string(input, "body")?;
                 Ok(Action::PostComment { body: body.into() })
             }
             "approve" => Ok(Action::Approve),
             "request_changes" => {
-                let reason = input
-                    .get("reason")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| Error::InvalidToolInput("missing reason".into()))?;
+                let reason = required_string(input, "reason")?;
                 Ok(Action::RequestChanges {
                     reason: reason.into(),
                 })
@@ -301,6 +269,44 @@ where
             _ => Err(Error::UnknownTool(name.into())),
         }
     }
+}
+
+fn event_to_message(event: &Event) -> Option<Message> {
+    match &event.payload {
+        EventPayload::Message { role, content } => {
+            let role = parse_message_role(role)?;
+            Some(Message {
+                role,
+                content: content.clone(),
+            })
+        }
+        EventPayload::Action(action) => Some(Message {
+            role: MessageRole::Assistant,
+            content: format!("Tool call: {}", serde_json::to_string(action).unwrap()),
+        }),
+        EventPayload::Observation(obs) => {
+            let content = serde_json::to_string(obs).unwrap();
+            Some(Message {
+                role: MessageRole::User,
+                content: format!("Tool result: {content}"),
+            })
+        }
+    }
+}
+
+fn parse_message_role(role: &str) -> Option<MessageRole> {
+    match role {
+        "user" => Some(MessageRole::User),
+        "assistant" => Some(MessageRole::Assistant),
+        _ => None,
+    }
+}
+
+fn required_string<'a>(input: &'a serde_json::Value, key: &str) -> Result<&'a str, Error> {
+    input
+        .get(key)
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| Error::InvalidToolInput(format!("missing {key}")))
 }
 
 #[cfg(test)]

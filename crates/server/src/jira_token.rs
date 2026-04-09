@@ -222,23 +222,7 @@ impl JiraTokenManager {
         let body = response.text().await?;
 
         if !status.is_success() {
-            // Try to parse as OAuth error
-            if let Ok(err) = serde_json::from_str::<OAuthErrorResponse>(&body) {
-                error!(
-                    error = %err.error,
-                    description = err.error_description.as_deref().unwrap_or(""),
-                    "OAuth token refresh failed"
-                );
-                return Err(TokenError::OAuth {
-                    error: err.error,
-                    description: err.error_description.unwrap_or_default(),
-                });
-            }
-            error!(status = %status, body = %body, "OAuth token refresh failed");
-            return Err(TokenError::OAuth {
-                error: status.to_string(),
-                description: body,
-            });
+            return Err(parse_oauth_failure(status, body));
         }
 
         let token_response: OAuthTokenResponse = serde_json::from_str(&body).map_err(|e| {
@@ -262,23 +246,13 @@ impl JiraTokenManager {
         access_token: &str,
         refresh_token: &str,
     ) -> Result<(), TokenError> {
-        let mut data = BTreeMap::new();
-        data.insert(
-            "access-token".to_string(),
-            ByteString(access_token.as_bytes().to_vec()),
-        );
-        data.insert(
-            "refresh-token".to_string(),
-            ByteString(refresh_token.as_bytes().to_vec()),
-        );
-
         let secret = Secret {
             metadata: kube::api::ObjectMeta {
                 name: Some(DYNAMIC_SECRET_NAME.into()),
                 namespace: Some(NAMESPACE.into()),
                 ..Default::default()
             },
-            data: Some(data),
+            data: Some(token_secret_data(access_token, refresh_token)),
             ..Default::default()
         };
 
@@ -312,6 +286,38 @@ impl JiraTokenManager {
     pub fn is_configured(&self) -> bool {
         !self.client_id.is_empty() && !self.client_secret.is_empty()
     }
+}
+
+fn parse_oauth_failure(status: reqwest::StatusCode, body: String) -> TokenError {
+    if let Ok(err) = serde_json::from_str::<OAuthErrorResponse>(&body) {
+        error!(
+            error = %err.error,
+            description = err.error_description.as_deref().unwrap_or(""),
+            "OAuth token refresh failed"
+        );
+        return TokenError::OAuth {
+            error: err.error,
+            description: err.error_description.unwrap_or_default(),
+        };
+    }
+    error!(status = %status, body = %body, "OAuth token refresh failed");
+    TokenError::OAuth {
+        error: status.to_string(),
+        description: body,
+    }
+}
+
+fn token_secret_data(access_token: &str, refresh_token: &str) -> BTreeMap<String, ByteString> {
+    let mut data = BTreeMap::new();
+    data.insert(
+        "access-token".to_string(),
+        ByteString(access_token.as_bytes().to_vec()),
+    );
+    data.insert(
+        "refresh-token".to_string(),
+        ByteString(refresh_token.as_bytes().to_vec()),
+    );
+    data
 }
 
 #[cfg(test)]
