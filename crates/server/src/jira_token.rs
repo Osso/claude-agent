@@ -10,10 +10,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use k8s_openapi::api::core::v1::Secret;
 use k8s_openapi::ByteString;
-use kube::api::{Api, Patch, PatchParams, PostParams};
+use k8s_openapi::api::core::v1::Secret;
 use kube::Client;
+use kube::api::{Api, Patch, PatchParams, PostParams};
 use reqwest::Client as HttpClient;
 use serde::Deserialize;
 use tokio::sync::RwLock;
@@ -39,7 +39,6 @@ pub enum TokenError {
 
     #[error("OAuth error: {error} - {description}")]
     OAuth { error: String, description: String },
-
 }
 
 #[derive(Debug, Deserialize)]
@@ -152,7 +151,8 @@ impl JiraTokenManager {
             self.exchange_refresh_token(&refresh_token).await?;
 
         // Update K8s secret with new tokens
-        self.update_secret(&access_token, &new_refresh_token).await?;
+        self.update_secret(&access_token, &new_refresh_token)
+            .await?;
 
         // Update in-memory cache
         let expires_at = Instant::now() + Duration::from_secs(expires_in);

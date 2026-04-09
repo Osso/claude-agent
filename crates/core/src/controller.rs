@@ -3,10 +3,10 @@
 use async_trait::async_trait;
 use tracing::{debug, error, info, warn};
 
+use crate::Error;
 use crate::event::{Action, Event, EventPayload, Observation, ReviewResult};
 use crate::state::{AgentState, State};
 use crate::stream::EventStream;
-use crate::Error;
 
 /// Maximum number of iterations before forcing termination.
 const MAX_ITERATIONS: u32 = 100;
@@ -49,7 +49,10 @@ pub enum ClaudeResponse {
         result: Option<String>,
     },
     /// Token usage info.
-    Usage { input_tokens: u64, output_tokens: u64 },
+    Usage {
+        input_tokens: u64,
+        output_tokens: u64,
+    },
 }
 
 /// Trait for executing actions in the environment.
@@ -148,8 +151,7 @@ where
                 ClaudeResponse::Result { subtype, result } => {
                     info!(subtype = %subtype, "Claude returned result");
                     if let Some(result_str) = result
-                        && let Ok(review_result) =
-                            serde_json::from_str::<ReviewResult>(&result_str)
+                        && let Ok(review_result) = serde_json::from_str::<ReviewResult>(&result_str)
                     {
                         self.state.set_finished(review_result.clone());
                         return Ok(Some(review_result));

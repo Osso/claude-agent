@@ -28,7 +28,7 @@ use jira_token::JiraTokenManager;
 use queue::Queue;
 use scheduler::Scheduler;
 use sentry::SentryProjectMapping as SentryMapping;
-use webhook::{router, AppState};
+use webhook::{AppState, router};
 
 #[tokio::main]
 async fn main() -> Result<()> {

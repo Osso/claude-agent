@@ -8,14 +8,16 @@ use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use base64::Engine;
-use tracing::{info, warn, Level};
+use tracing::{Level, info, warn};
 use tracing_subscriber::FmtSubscriber;
 
-use claude_agent_agents::{JiraHandlerAgent, JiraTicketContext, MrReviewAgent, SentryFixContext, SentryFixerAgent};
+use claude_agent_agents::{
+    JiraHandlerAgent, JiraTicketContext, MrReviewAgent, SentryFixContext, SentryFixerAgent,
+};
 use claude_agent_core::ReviewContext;
-use claude_agent_server::sentry_api::{extract_tags, format_stacktrace, SentryClient};
+use claude_agent_server::sentry_api::{SentryClient, extract_tags, format_stacktrace};
 use claude_agent_server::{JiraTicketPayload, JobPayload, SentryFixPayload};
 
 const VERSION: &str = "2026.02.12.1";
@@ -71,7 +73,12 @@ fn clone_and_get_diff(
     work_dir: &PathBuf,
 ) -> Result<(String, Vec<String>, Option<(String, String, String)>)> {
     let auth_clone_url = inject_github_credentials(&payload.clone_url, token);
-    clone_repo(&auth_clone_url, &payload.source_branch, &payload.target_branch, work_dir)?;
+    clone_repo(
+        &auth_clone_url,
+        &payload.source_branch,
+        &payload.target_branch,
+        work_dir,
+    )?;
 
     let diff = get_diff(work_dir, &payload.target_branch)?;
     let changed_files = get_changed_files(work_dir, &payload.target_branch)?;
@@ -176,9 +183,18 @@ fn fetch_sentry_details(
         let tags = extract_tags(&event);
 
         let issue = client.get_issue(&payload.issue_id).await?;
-        let title = issue["title"].as_str().unwrap_or(&payload.title).to_string();
-        let culprit = issue["culprit"].as_str().unwrap_or(&payload.culprit).to_string();
-        let platform = issue["platform"].as_str().unwrap_or(&payload.platform).to_string();
+        let title = issue["title"]
+            .as_str()
+            .unwrap_or(&payload.title)
+            .to_string();
+        let culprit = issue["culprit"]
+            .as_str()
+            .unwrap_or(&payload.culprit)
+            .to_string();
+        let platform = issue["platform"]
+            .as_str()
+            .unwrap_or(&payload.platform)
+            .to_string();
 
         Ok::<_, anyhow::Error>((stacktrace, tags, title, culprit, platform))
     })
@@ -210,8 +226,13 @@ fn run_sentry_fix_job(payload: SentryFixPayload) -> Result<()> {
     );
 
     let sentry_token = env::var("SENTRY_AUTH_TOKEN").context("SENTRY_AUTH_TOKEN not set")?;
-    let (stacktrace, tags, title, culprit, platform) = fetch_sentry_details(&payload, &sentry_token)?;
-    info!(stacktrace_len = stacktrace.len(), tags_count = tags.len(), "Fetched Sentry issue details");
+    let (stacktrace, tags, title, culprit, platform) =
+        fetch_sentry_details(&payload, &sentry_token)?;
+    info!(
+        stacktrace_len = stacktrace.len(),
+        tags_count = tags.len(),
+        "Fetched Sentry issue details"
+    );
 
     let context = SentryFixContext {
         short_id: payload.short_id.clone(),
@@ -390,7 +411,11 @@ fn get_diff(repo_dir: &PathBuf, target_branch: &str) -> Result<String> {
 
 fn get_changed_files(repo_dir: &PathBuf, target_branch: &str) -> Result<Vec<String>> {
     let output = Command::new("git")
-        .args(["diff", "--name-only", &format!("origin/{target_branch}...HEAD")])
+        .args([
+            "diff",
+            "--name-only",
+            &format!("origin/{target_branch}...HEAD"),
+        ])
         .current_dir(repo_dir)
         .output()
         .context("Failed to run git diff --name-only")?;
@@ -446,7 +471,11 @@ fn fetch_github_review_comments(
         .context("Failed to fetch GitHub review comments")?;
 
     if !resp.status().is_success() {
-        bail!("GitHub API {} - {}", resp.status(), resp.text().unwrap_or_default());
+        bail!(
+            "GitHub API {} - {}",
+            resp.status(),
+            resp.text().unwrap_or_default()
+        );
     }
 
     let comments: Vec<serde_json::Value> = resp.json().context("Failed to parse comments")?;
@@ -462,7 +491,10 @@ mod tests {
         let url = "https://github.com/owner/repo.git";
         let token = "ghs_xxx";
         let result = inject_github_credentials(url, token);
-        assert_eq!(result, "https://x-access-token:ghs_xxx@github.com/owner/repo.git");
+        assert_eq!(
+            result,
+            "https://x-access-token:ghs_xxx@github.com/owner/repo.git"
+        );
     }
 
     #[test]

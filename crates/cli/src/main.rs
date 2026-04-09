@@ -4,14 +4,14 @@
 
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use futures_util::io::AsyncBufReadExt;
 use futures_util::StreamExt;
+use futures_util::io::AsyncBufReadExt;
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::Pod;
-use kube::api::{Api, ListParams, LogParams};
 use kube::Client;
+use kube::api::{Api, ListParams, LogParams};
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde::Deserialize;
 use tracing::Level;
@@ -175,7 +175,11 @@ async fn handle_server_command(command: Commands, server_url: &str, api_key: &st
             println!("Job ID: {id}");
         }
 
-        Commands::SentryFix { org, project, issue } => {
+        Commands::SentryFix {
+            org,
+            project,
+            issue,
+        } => {
             handle_sentry_fix(server_url, api_key, &org, &project, &issue).await?;
         }
 
@@ -192,7 +196,13 @@ async fn handle_server_command(command: Commands, server_url: &str, api_key: &st
     Ok(())
 }
 
-async fn handle_sentry_fix(server_url: &str, api_key: &str, org: &str, project: &str, issue: &str) -> Result<()> {
+async fn handle_sentry_fix(
+    server_url: &str,
+    api_key: &str,
+    org: &str,
+    project: &str,
+    issue: &str,
+) -> Result<()> {
     match api_queue_sentry_fix(server_url, api_key, org, project, issue).await? {
         SentryFixResult::Queued(id) => {
             println!("Queued Sentry fix for {} in {}/{}", issue, org, project);
@@ -203,7 +213,12 @@ async fn handle_sentry_fix(server_url: &str, api_key: &str, org: &str, project: 
     Ok(())
 }
 
-async fn handle_jira_fix(server_url: &str, api_key: &str, issue: &str, jira_url: &str) -> Result<()> {
+async fn handle_jira_fix(
+    server_url: &str,
+    api_key: &str,
+    issue: &str,
+    jira_url: &str,
+) -> Result<()> {
     match api_queue_jira_fix(server_url, api_key, issue, jira_url).await? {
         JiraFixResult::Queued(id) => {
             println!("Queued Jira fix for {}", issue);
@@ -274,7 +289,9 @@ fn print_job_line(job: &Job, show_all: bool) {
 }
 
 async fn list_jobs(show_all: bool) -> Result<()> {
-    let client = Client::try_default().await.context("Failed to create Kubernetes client")?;
+    let client = Client::try_default()
+        .await
+        .context("Failed to create Kubernetes client")?;
     let jobs: Api<Job> = Api::namespaced(client, NAMESPACE);
     let lp = ListParams::default().labels("app=claude-review");
     let job_list = jobs.list(&lp).await.context("Failed to list jobs")?;
@@ -293,7 +310,9 @@ async fn list_jobs(show_all: bool) -> Result<()> {
 }
 
 async fn show_logs(job_filter: Option<&str>, follow: bool, tail: i64) -> Result<()> {
-    let client = Client::try_default().await.context("Failed to create Kubernetes client")?;
+    let client = Client::try_default()
+        .await
+        .context("Failed to create Kubernetes client")?;
     let jobs: Api<Job> = Api::namespaced(client.clone(), NAMESPACE);
     let pods: Api<Pod> = Api::namespaced(client, NAMESPACE);
 
@@ -347,18 +366,33 @@ async fn resolve_job_name(jobs: &Api<Job>, job_filter: Option<&str>) -> Result<S
         .context("No review jobs found")
 }
 
-async fn stream_or_fetch_logs(pods: &Api<Pod>, pod_name: &str, follow: bool, tail: i64) -> Result<()> {
-    let mut lp = LogParams { tail_lines: Some(tail), follow, ..Default::default() };
+async fn stream_or_fetch_logs(
+    pods: &Api<Pod>,
+    pod_name: &str,
+    follow: bool,
+    tail: i64,
+) -> Result<()> {
+    let mut lp = LogParams {
+        tail_lines: Some(tail),
+        follow,
+        ..Default::default()
+    };
 
     if follow {
-        let stream = pods.log_stream(pod_name, &lp).await.context("Failed to get log stream")?;
+        let stream = pods
+            .log_stream(pod_name, &lp)
+            .await
+            .context("Failed to get log stream")?;
         let mut lines = stream.lines();
         while let Some(line) = lines.next().await {
             println!("{}", line?);
         }
     } else {
         lp.follow = false;
-        let logs = pods.logs(pod_name, &lp).await.context("Failed to get logs")?;
+        let logs = pods
+            .logs(pod_name, &lp)
+            .await
+            .context("Failed to get logs")?;
         print!("{logs}");
     }
 
@@ -376,20 +410,32 @@ struct ApiStats {
 
 fn create_api_client(api_key: &str) -> Result<reqwest::Client> {
     let mut headers = HeaderMap::new();
-    headers.insert("Authorization", HeaderValue::from_str(&format!("Bearer {api_key}"))?);
-    Ok(reqwest::Client::builder().default_headers(headers).build()?)
+    headers.insert(
+        "Authorization",
+        HeaderValue::from_str(&format!("Bearer {api_key}"))?,
+    );
+    Ok(reqwest::Client::builder()
+        .default_headers(headers)
+        .build()?)
 }
 
 async fn api_stats(server_url: &str, api_key: &str) -> Result<()> {
     let client = create_api_client(api_key)?;
     let url = format!("{}/api/stats", server_url.trim_end_matches('/'));
-    let resp = client.get(&url).send().await.context("Failed to fetch stats")?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .context("Failed to fetch stats")?;
 
     if !resp.status().is_success() {
         bail!("API error: {} - {}", resp.status(), resp.text().await?);
     }
 
-    let stats: ApiStats = resp.json().await.context("Failed to parse stats response")?;
+    let stats: ApiStats = resp
+        .json()
+        .await
+        .context("Failed to parse stats response")?;
     println!("Queue Statistics:");
     println!("  Pending:    {}", stats.pending);
     println!("  Processing: {}", stats.processing);
@@ -401,13 +447,20 @@ async fn api_stats(server_url: &str, api_key: &str) -> Result<()> {
 async fn api_list_failed(server_url: &str, api_key: &str, limit: usize) -> Result<()> {
     let client = create_api_client(api_key)?;
     let url = format!("{}/api/failed", server_url.trim_end_matches('/'));
-    let resp = client.get(&url).send().await.context("Failed to fetch failed items")?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .context("Failed to fetch failed items")?;
 
     if !resp.status().is_success() {
         bail!("API error: {} - {}", resp.status(), resp.text().await?);
     }
 
-    let items: Vec<FailedItem> = resp.json().await.context("Failed to parse failed items response")?;
+    let items: Vec<FailedItem> = resp
+        .json()
+        .await
+        .context("Failed to parse failed items response")?;
 
     if items.is_empty() {
         println!("No failed items");
@@ -425,7 +478,11 @@ async fn api_list_failed(server_url: &str, api_key: &str, limit: usize) -> Resul
 async fn api_retry(server_url: &str, api_key: &str, id: &str) -> Result<()> {
     let client = create_api_client(api_key)?;
     let url = format!("{}/api/retry/{}", server_url.trim_end_matches('/'), id);
-    let resp = client.post(&url).send().await.context("Failed to retry item")?;
+    let resp = client
+        .post(&url)
+        .send()
+        .await
+        .context("Failed to retry item")?;
 
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         println!("Job not found in failed list: {id}");
@@ -453,20 +510,33 @@ async fn api_queue_github_review(
         body["action"] = serde_json::json!(action);
     }
 
-    let resp = client.post(&url).json(&body).send().await.context("Failed to queue GitHub review")?;
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .context("Failed to queue GitHub review")?;
 
     if !resp.status().is_success() {
         bail!("API error: {} - {}", resp.status(), resp.text().await?);
     }
 
     #[derive(Deserialize)]
-    struct QueueResponse { job_id: String }
+    struct QueueResponse {
+        job_id: String,
+    }
 
-    let result: QueueResponse = resp.json().await.context("Failed to parse queue response")?;
+    let result: QueueResponse = resp
+        .json()
+        .await
+        .context("Failed to parse queue response")?;
     Ok(result.job_id)
 }
 
-enum SentryFixResult { Queued(String), Skipped(String) }
+enum SentryFixResult {
+    Queued(String),
+    Skipped(String),
+}
 
 async fn api_queue_sentry_fix(
     server_url: &str,
@@ -479,22 +549,43 @@ async fn api_queue_sentry_fix(
     let url = format!("{}/api/sentry-fix", server_url.trim_end_matches('/'));
     let body = serde_json::json!({ "organization": org, "project": project, "issue_id": issue_id });
 
-    let resp = client.post(&url).json(&body).send().await.context("Failed to queue Sentry fix")?;
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .context("Failed to queue Sentry fix")?;
 
     if !resp.status().is_success() {
         bail!("API error: {} - {}", resp.status(), resp.text().await?);
     }
 
-    let result: serde_json::Value = resp.json().await.context("Failed to parse queue response")?;
+    let result: serde_json::Value = resp
+        .json()
+        .await
+        .context("Failed to parse queue response")?;
 
     if result["status"].as_str().unwrap_or("") == "skipped" {
-        Ok(SentryFixResult::Skipped(result["message"].as_str().unwrap_or("Already exists").to_string()))
+        Ok(SentryFixResult::Skipped(
+            result["message"]
+                .as_str()
+                .unwrap_or("Already exists")
+                .to_string(),
+        ))
     } else {
-        Ok(SentryFixResult::Queued(result["job_id"].as_str().context("Missing job_id")?.to_string()))
+        Ok(SentryFixResult::Queued(
+            result["job_id"]
+                .as_str()
+                .context("Missing job_id")?
+                .to_string(),
+        ))
     }
 }
 
-enum JiraFixResult { Queued(String), Skipped(String) }
+enum JiraFixResult {
+    Queued(String),
+    Skipped(String),
+}
 
 async fn api_queue_jira_fix(
     server_url: &str,
@@ -506,18 +597,36 @@ async fn api_queue_jira_fix(
     let url = format!("{}/api/jira-fix", server_url.trim_end_matches('/'));
     let body = serde_json::json!({ "issue_key": issue_key, "jira_url": jira_url });
 
-    let resp = client.post(&url).json(&body).send().await.context("Failed to queue Jira fix")?;
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .context("Failed to queue Jira fix")?;
 
     if !resp.status().is_success() {
         bail!("API error: {} - {}", resp.status(), resp.text().await?);
     }
 
-    let result: serde_json::Value = resp.json().await.context("Failed to parse queue response")?;
+    let result: serde_json::Value = resp
+        .json()
+        .await
+        .context("Failed to parse queue response")?;
 
     if result["status"].as_str().unwrap_or("") == "skipped" {
-        Ok(JiraFixResult::Skipped(result["message"].as_str().unwrap_or("Already exists").to_string()))
+        Ok(JiraFixResult::Skipped(
+            result["message"]
+                .as_str()
+                .unwrap_or("Already exists")
+                .to_string(),
+        ))
     } else {
-        Ok(JiraFixResult::Queued(result["job_id"].as_str().context("Missing job_id")?.to_string()))
+        Ok(JiraFixResult::Queued(
+            result["job_id"]
+                .as_str()
+                .context("Missing job_id")?
+                .to_string(),
+        ))
     }
 }
 
@@ -544,7 +653,10 @@ fn print_token_status(name: &str, status: &TokenStatus, all_valid: &mut bool) {
     } else if status.valid {
         println!("✓ valid ({})", status.info.as_deref().unwrap_or(""));
     } else {
-        println!("✗ invalid - {}", status.error.as_deref().unwrap_or("unknown"));
+        println!(
+            "✗ invalid - {}",
+            status.error.as_deref().unwrap_or("unknown")
+        );
         *all_valid = false;
     }
 }
@@ -552,13 +664,20 @@ fn print_token_status(name: &str, status: &TokenStatus, all_valid: &mut bool) {
 async fn api_check_tokens(server_url: &str, api_key: &str) -> Result<()> {
     let client = create_api_client(api_key)?;
     let url = format!("{}/api/check-tokens", server_url.trim_end_matches('/'));
-    let resp = client.get(&url).send().await.context("Failed to check tokens")?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .context("Failed to check tokens")?;
 
     if !resp.status().is_success() {
         bail!("API error: {} - {}", resp.status(), resp.text().await?);
     }
 
-    let result: CheckTokensResponse = resp.json().await.context("Failed to parse check-tokens response")?;
+    let result: CheckTokensResponse = resp
+        .json()
+        .await
+        .context("Failed to parse check-tokens response")?;
 
     let mut all_valid = true;
     print_token_status("GitHub:  ", &result.github, &mut all_valid);

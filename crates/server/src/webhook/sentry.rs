@@ -3,17 +3,17 @@
 use std::sync::Arc;
 
 use axum::{
+    Json,
     body::Bytes,
     extract::State,
     http::{HeaderMap, StatusCode},
-    Json,
 };
 use tracing::{debug, error, info, warn};
 
 use crate::payload::SentryFixPayload;
 use crate::sentry::{self, SentryWebhookEvent};
 
-use super::{branch_exists_on_platform, queued, skipped, AppError, AppState, WebhookResponse};
+use super::{AppError, AppState, WebhookResponse, branch_exists_on_platform, queued, skipped};
 
 /// Sentry webhook handler.
 pub(super) async fn sentry_webhook_handler(
@@ -84,8 +84,13 @@ async fn queue_sentry_webhook_fix(
         .ok_or_else(|| AppError::Internal("SENTRY_ORGANIZATION not configured".into()))?;
 
     let branch_name = format!("sentry-fix/{}", issue.short_id.to_lowercase());
-    if branch_exists_on_platform(state, &mapping.vcs_platform, &mapping.vcs_project, &branch_name)
-        .await?
+    if branch_exists_on_platform(
+        state,
+        &mapping.vcs_platform,
+        &mapping.vcs_project,
+        &branch_name,
+    )
+    .await?
     {
         info!(branch = %branch_name, issue = %issue.short_id, "Fix branch already exists, skipping");
         return Ok(skipped(format!("Branch {} already exists", branch_name)));
@@ -108,10 +113,7 @@ fn build_sentry_webhook_payload(
         title: issue.title.clone(),
         culprit: issue.culprit.clone(),
         platform: issue.platform.clone(),
-        issue_type: issue
-            .issue_type
-            .clone()
-            .unwrap_or_else(|| "error".into()),
+        issue_type: issue.issue_type.clone().unwrap_or_else(|| "error".into()),
         issue_category: issue
             .issue_category
             .clone()

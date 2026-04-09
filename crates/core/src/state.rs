@@ -23,7 +23,6 @@ pub enum AgentState {
     Error,
 }
 
-
 /// Context for a merge request review.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewContext {
@@ -140,10 +139,7 @@ impl State {
     }
 
     pub fn is_finished(&self) -> bool {
-        matches!(
-            self.agent_state,
-            AgentState::Finished | AgentState::Error
-        )
+        matches!(self.agent_state, AgentState::Finished | AgentState::Error)
     }
 
     pub fn set_running(&mut self) {

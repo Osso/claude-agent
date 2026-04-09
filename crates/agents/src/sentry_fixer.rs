@@ -156,8 +156,14 @@ impl SentryFixerAgent {
         prompt.push_str(&format!("**Platform**: {}\n", self.context.platform));
         prompt.push_str(&format!("**URL**: {}\n", self.context.web_url));
         prompt.push_str(&format!("**VCS Project**: {}\n", self.context.vcs_project));
-        prompt.push_str(&format!("**Target Branch**: {}\n", self.context.target_branch));
-        prompt.push_str(&format!("**VCS Platform**: {}\n", self.context.vcs_platform));
+        prompt.push_str(&format!(
+            "**Target Branch**: {}\n",
+            self.context.target_branch
+        ));
+        prompt.push_str(&format!(
+            "**VCS Platform**: {}\n",
+            self.context.vcs_platform
+        ));
 
         if !self.context.tags.is_empty() {
             prompt.push_str("\n**Tags**:\n");
@@ -170,7 +176,9 @@ impl SentryFixerAgent {
     fn append_error_details(&self, prompt: &mut String) {
         prompt.push_str("\n## Error Details\n\n");
         if self.context.stacktrace.is_empty() {
-            prompt.push_str("_No stacktrace available. Investigate based on the culprit location._\n");
+            prompt.push_str(
+                "_No stacktrace available. Investigate based on the culprit location._\n",
+            );
         } else {
             prompt.push_str(&self.context.stacktrace);
         }
@@ -178,7 +186,10 @@ impl SentryFixerAgent {
 
     fn append_task(&self, prompt: &mut String) {
         prompt.push_str("\n\n## Task\n\n");
-        prompt.push_str(&format!("1. Analyze the error in `{}`\n", self.context.culprit));
+        prompt.push_str(&format!(
+            "1. Analyze the error in `{}`\n",
+            self.context.culprit
+        ));
         prompt.push_str("2. Read the relevant source files to understand the context\n");
         prompt.push_str("3. Implement a fix for the root cause\n");
         prompt.push_str(&format!(

@@ -211,3 +211,4 @@ Jira Webhook → Queue → Worker → Plan → Implement → Test → Create MR
 | 5 | Month 4 | Phase 1-2 learnings |
 | 6 | Month 5-6 | Performance baseline |
 | 7 | Month 6+ | User feedback |
+- [ ] Refactor `crates/claude/src/process.rs`: convert_output (line 215): nesting depth 5 (max 4) — extract into helper functions

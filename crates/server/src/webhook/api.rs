@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use axum::{
+    Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    Json,
 };
 use serde::Deserialize;
 use tracing::{info, warn};
@@ -15,7 +15,7 @@ use crate::jira;
 use crate::payload::{JiraTicketPayload, SentryFixPayload};
 
 use super::github::fetch_github_pr_payload;
-use super::{branch_exists_on_platform, AppError, AppState};
+use super::{AppError, AppState, branch_exists_on_platform};
 
 // -- Queue management --
 
@@ -163,8 +163,13 @@ pub(super) async fn queue_sentry_fix_handler(
     let (issue, short_id) = fetch_sentry_issue_details(&state, &req).await?;
     let branch_name = format!("sentry-fix/{}", short_id.to_lowercase());
 
-    if branch_exists_on_platform(&state, &mapping.vcs_platform, &mapping.vcs_project, &branch_name)
-        .await?
+    if branch_exists_on_platform(
+        &state,
+        &mapping.vcs_platform,
+        &mapping.vcs_project,
+        &branch_name,
+    )
+    .await?
     {
         info!(branch = %branch_name, issue = %short_id, "Fix branch already exists, skipping");
         return Ok(skipped_branch_response(&branch_name));
@@ -179,9 +184,7 @@ pub(super) async fn queue_sentry_fix_handler(
     ))
 }
 
-fn skipped_branch_response(
-    branch_name: &str,
-) -> (StatusCode, Json<serde_json::Value>) {
+fn skipped_branch_response(branch_name: &str) -> (StatusCode, Json<serde_json::Value>) {
     (
         StatusCode::OK,
         Json(serde_json::json!({
@@ -224,10 +227,7 @@ fn build_sentry_api_payload(
         title: issue["title"].as_str().unwrap_or("").to_string(),
         culprit: issue["culprit"].as_str().unwrap_or("").to_string(),
         platform: issue["platform"].as_str().unwrap_or("").to_string(),
-        issue_type: issue["issueType"]
-            .as_str()
-            .unwrap_or("error")
-            .to_string(),
+        issue_type: issue["issueType"].as_str().unwrap_or("error").to_string(),
         issue_category: issue["issueCategory"]
             .as_str()
             .unwrap_or("error")
@@ -301,8 +301,13 @@ pub(super) async fn queue_jira_fix_handler(
     let mapping = find_jira_mapping(&state, project_key)?;
 
     let branch_name = format!("jira-fix/{}", req.issue_key.to_lowercase());
-    if branch_exists_on_platform(&state, &mapping.vcs_platform, &mapping.vcs_project, &branch_name)
-        .await?
+    if branch_exists_on_platform(
+        &state,
+        &mapping.vcs_platform,
+        &mapping.vcs_project,
+        &branch_name,
+    )
+    .await?
     {
         info!(branch = %branch_name, issue = %req.issue_key, "Fix branch already exists, skipping");
         return Ok(skipped_branch_response(&branch_name));

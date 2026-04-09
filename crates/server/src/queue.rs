@@ -1,7 +1,7 @@
 //! Redis queue for review jobs.
 
-use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
+use redis::aio::ConnectionManager;
 use tracing::{debug, error, info};
 
 use crate::payload::JobPayload;
@@ -62,9 +62,7 @@ impl Queue {
         let mut conn = self.conn.clone();
 
         // BLPOP returns (key, value) or None on timeout
-        let result: Option<(String, String)> = conn
-            .blpop(QUEUE_KEY, timeout_secs as f64)
-            .await?;
+        let result: Option<(String, String)> = conn.blpop(QUEUE_KEY, timeout_secs as f64).await?;
 
         match result {
             Some((_, json)) => {
@@ -143,9 +141,7 @@ impl Queue {
     /// List failed items.
     pub async fn list_failed(&self, limit: usize) -> Result<Vec<FailedItem>, redis::RedisError> {
         let mut conn = self.conn.clone();
-        let items: Vec<String> = conn
-            .lrange(FAILED_KEY, 0, (limit as isize) - 1)
-            .await?;
+        let items: Vec<String> = conn.lrange(FAILED_KEY, 0, (limit as isize) - 1).await?;
 
         Ok(items
             .into_iter()

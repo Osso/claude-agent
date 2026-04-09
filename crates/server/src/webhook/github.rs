@@ -3,17 +3,17 @@
 use std::sync::Arc;
 
 use axum::{
+    Json,
     body::Bytes,
     extract::State,
     http::{HeaderMap, StatusCode},
-    Json,
 };
 use tracing::{debug, error, info, warn};
 
-use crate::github::{verify_signature, PullRequestEvent};
+use crate::github::{PullRequestEvent, verify_signature};
 use crate::payload::ReviewPayload;
 
-use super::{ignored, queued, AppError, AppState, WebhookResponse};
+use super::{AppError, AppState, WebhookResponse, ignored, queued};
 
 /// GitHub webhook handler for pull_request events.
 pub(super) async fn github_webhook_handler(
@@ -31,8 +31,15 @@ pub(super) async fn github_webhook_handler(
     if !event.should_review() {
         return Ok(ignored("Event does not require review"));
     }
-    if state.ignored_repos.iter().any(|r| r.eq_ignore_ascii_case(&event.repository.full_name)) {
-        return Ok(ignored(format!("Repo {} is ignored", event.repository.full_name)));
+    if state
+        .ignored_repos
+        .iter()
+        .any(|r| r.eq_ignore_ascii_case(&event.repository.full_name))
+    {
+        return Ok(ignored(format!(
+            "Repo {} is ignored",
+            event.repository.full_name
+        )));
     }
     let payload = ReviewPayload::from(&event);
     let job_id = state.queue.push(payload).await.map_err(AppError::Redis)?;

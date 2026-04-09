@@ -125,11 +125,7 @@ impl JiraWebhookEvent {
     /// Get the Jira instance base URL from the issue self URL.
     pub fn jira_base_url(&self) -> Option<String> {
         // self_url is like "https://globalcomix.atlassian.net/rest/api/3/issue/12345"
-        self.issue
-            .self_url
-            .split("/rest/")
-            .next()
-            .map(String::from)
+        self.issue.self_url.split("/rest/").next().map(String::from)
     }
 
     /// Get the web URL to the issue.
@@ -137,7 +133,10 @@ impl JiraWebhookEvent {
         if let Some(base) = self.jira_base_url() {
             format!("{}/browse/{}", base, self.issue.key)
         } else {
-            format!("https://globalcomix.atlassian.net/browse/{}", self.issue.key)
+            format!(
+                "https://globalcomix.atlassian.net/browse/{}",
+                self.issue.key
+            )
         }
     }
 }
@@ -150,8 +149,7 @@ impl JiraComment {
     /// the display name.
     pub fn mentions_bot(&self) -> bool {
         let text = self.body_as_text();
-        text.to_lowercase().contains(&BOT_MENTION.to_lowercase())
-            || text.contains(BOT_ACCOUNT_ID)
+        text.to_lowercase().contains(&BOT_MENTION.to_lowercase()) || text.contains(BOT_ACCOUNT_ID)
     }
 
     /// Extract plain text from comment body.
@@ -219,11 +217,7 @@ pub fn verify_signature(secret: &str, body: &[u8], signature: &str) -> bool {
     let computed = hex::encode(result.into_bytes());
 
     // Constant-time comparison
-    computed.len() == expected.len()
-        && computed
-            .bytes()
-            .zip(expected.bytes())
-            .all(|(a, b)| a == b)
+    computed.len() == expected.len() && computed.bytes().zip(expected.bytes()).all(|(a, b)| a == b)
 }
 
 /// Jira project mapping configuration.

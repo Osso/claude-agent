@@ -159,9 +159,20 @@ mod tests {
             body: Some("Description".into()),
             state: "open".into(),
             draft: Some(draft),
-            user: User { id: 1, login: "testuser".into() },
-            head: GitRef { ref_name: "feature-branch".into(), sha: "abc123".into(), repo: None },
-            base: GitRef { ref_name: "main".into(), sha: "def456".into(), repo: None },
+            user: User {
+                id: 1,
+                login: "testuser".into(),
+            },
+            head: GitRef {
+                ref_name: "feature-branch".into(),
+                sha: "abc123".into(),
+                repo: None,
+            },
+            base: GitRef {
+                ref_name: "main".into(),
+                sha: "def456".into(),
+                repo: None,
+            },
             html_url: "https://github.com/owner/repo/pull/42".into(),
         }
     }
@@ -183,7 +194,10 @@ mod tests {
             number: 42,
             pull_request: make_pull_request(draft),
             repository: make_repository(),
-            sender: User { id: 1, login: "testuser".into() },
+            sender: User {
+                id: 1,
+                login: "testuser".into(),
+            },
         }
     }
 

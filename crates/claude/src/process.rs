@@ -39,12 +39,14 @@ impl ClaudeProcess {
             .spawn()
             .map_err(Error::Io)?;
 
-        let stdin = child.stdin.take().ok_or_else(|| {
-            Error::ClaudeApi("Failed to capture stdin".into())
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            Error::ClaudeApi("Failed to capture stdout".into())
-        })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| Error::ClaudeApi("Failed to capture stdin".into()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| Error::ClaudeApi("Failed to capture stdout".into()))?;
 
         Ok(Self {
             child,
@@ -174,10 +176,7 @@ impl ClaudeBackend for ClaudeProcess {
         let outputs = self.send(&prompt)?;
 
         // Convert to ClaudeResponse
-        let responses = outputs
-            .into_iter()
-            .filter_map(convert_output)
-            .collect();
+        let responses = outputs.into_iter().filter_map(convert_output).collect();
 
         Ok(responses)
     }
@@ -218,7 +217,9 @@ fn build_prompt(messages: &[Message]) -> String {
 
 fn convert_output(output: ClaudeOutput) -> Option<ClaudeResponse> {
     match output {
-        ClaudeOutput::Assistant { message: Some(msg), .. } => {
+        ClaudeOutput::Assistant {
+            message: Some(msg), ..
+        } => {
             for block in msg.content {
                 match block {
                     ContentBlock::Text { text } => {
@@ -232,9 +233,9 @@ fn convert_output(output: ClaudeOutput) -> Option<ClaudeResponse> {
             }
             None
         }
-        ClaudeOutput::Result { subtype, result, .. } => {
-            Some(ClaudeResponse::Result { subtype, result })
-        }
+        ClaudeOutput::Result {
+            subtype, result, ..
+        } => Some(ClaudeResponse::Result { subtype, result }),
         _ => None,
     }
 }

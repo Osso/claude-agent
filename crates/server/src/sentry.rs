@@ -172,9 +172,7 @@ impl SentryWebhookEvent {
 /// Sentry uses the format: `sha256=<hex-signature>`
 pub fn verify_signature(secret: &str, body: &[u8], signature: &str) -> bool {
     // Sentry sends raw hex digest (no prefix), but accept sha256= prefix too
-    let sig_hex = signature
-        .strip_prefix("sha256=")
-        .unwrap_or(signature);
+    let sig_hex = signature.strip_prefix("sha256=").unwrap_or(signature);
 
     let expected = match hex::decode(sig_hex) {
         Ok(bytes) => bytes,
@@ -220,7 +218,11 @@ mod tests {
         make_event_with_level(action, issue_category, Some("error"))
     }
 
-    fn make_event_with_level(action: &str, issue_category: Option<&str>, level: Option<&str>) -> SentryWebhookEvent {
+    fn make_event_with_level(
+        action: &str,
+        issue_category: Option<&str>,
+        level: Option<&str>,
+    ) -> SentryWebhookEvent {
         SentryWebhookEvent {
             action: action.into(),
             installation: Installation {

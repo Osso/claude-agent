@@ -13,8 +13,8 @@ use k8s_openapi::api::core::v1::{
     ResourceRequirements, SecretKeySelector, Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
-use kube::api::{Api, DeleteParams, ListParams, PostParams};
 use kube::Client;
+use kube::api::{Api, DeleteParams, ListParams, PostParams};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
@@ -24,8 +24,9 @@ use crate::queue::{Queue, QueueItem};
 const NAMESPACE: &str = "claude-agent";
 /// Worker image, configurable via WORKER_IMAGE env var (defaults to :latest)
 fn worker_image() -> String {
-    std::env::var("WORKER_IMAGE")
-        .unwrap_or_else(|_| "registry.digitalocean.com/globalcomix/claude-agent-worker:latest".into())
+    std::env::var("WORKER_IMAGE").unwrap_or_else(|_| {
+        "registry.digitalocean.com/globalcomix/claude-agent-worker:latest".into()
+    })
 }
 const JOB_TTL_SECONDS: i32 = 900; // 15 minutes after completion
 
@@ -422,6 +423,9 @@ mod tests {
         }
 
         not_found_count += 1;
-        assert!(not_found_count >= threshold, "Should fail after 3 not-founds");
+        assert!(
+            not_found_count >= threshold,
+            "Should fail after 3 not-founds"
+        );
     }
 }

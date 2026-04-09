@@ -30,11 +30,16 @@ fn execute_read_file(repo_path: &std::path::Path, path: &str) -> Result<Observat
     debug!(path = %full_path.display(), "Reading file");
 
     match std::fs::read_to_string(&full_path) {
-        Ok(content) => Ok(Observation::FileContent { path: path.into(), content }),
+        Ok(content) => Ok(Observation::FileContent {
+            path: path.into(),
+            content,
+        }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             Ok(Observation::FileNotFound { path: path.into() })
         }
-        Err(e) => Ok(Observation::Error { message: format!("Failed to read file: {e}") }),
+        Err(e) => Ok(Observation::Error {
+            message: format!("Failed to read file: {e}"),
+        }),
     }
 }
 
@@ -64,8 +69,13 @@ fn execute_command(repo_path: &std::path::Path, cmd: &str) -> Result<Observation
 
 impl MrReviewAgent {
     async fn execute_post_comment(&self, body: &str) -> Result<Observation, Error> {
-        info!(body_len = body.len(), "Would post comment (no VCS client configured)");
-        Ok(Observation::CommentPosted { comment_id: "mock".into() })
+        info!(
+            body_len = body.len(),
+            "Would post comment (no VCS client configured)"
+        );
+        Ok(Observation::CommentPosted {
+            comment_id: "mock".into(),
+        })
     }
 
     async fn execute_approve(&self) -> Result<Observation, Error> {
@@ -87,27 +97,42 @@ pub(crate) fn is_safe_command(cmd: &str) -> bool {
 
 fn is_build_tool(cmd: &str) -> bool {
     let prefixes = [
-        "cargo ", "cargo clippy", "cargo test", "cargo check", "cargo fmt",
-        "npm ", "yarn ", "pnpm ",
-        "phpstan ", "mago lint",
-        "eslint ", "prettier ",
-        "black ", "ruff ", "mypy ", "pytest ",
-        "go test", "go vet", "golangci-lint",
-        "php -l", "php --syntax-check",
-        "jq ", "sentry ", "jira ",
+        "cargo ",
+        "cargo clippy",
+        "cargo test",
+        "cargo check",
+        "cargo fmt",
+        "npm ",
+        "yarn ",
+        "pnpm ",
+        "phpstan ",
+        "mago lint",
+        "eslint ",
+        "prettier ",
+        "black ",
+        "ruff ",
+        "mypy ",
+        "pytest ",
+        "go test",
+        "go vet",
+        "golangci-lint",
+        "php -l",
+        "php --syntax-check",
+        "jq ",
+        "sentry ",
+        "jira ",
     ];
     prefixes.iter().any(|p| cmd.starts_with(p))
 }
 
 fn is_read_tool(cmd: &str) -> bool {
-    let prefixes = ["cat ", "head ", "tail ", "wc ", "grep ", "rg ", "ls ", "find "];
+    let prefixes = [
+        "cat ", "head ", "tail ", "wc ", "grep ", "rg ", "ls ", "find ",
+    ];
     prefixes.iter().any(|p| cmd.starts_with(p))
 }
 
 fn is_vcs_tool(cmd: &str) -> bool {
-    let prefixes = [
-        "git add ", "git commit ", "git push ",
-        "github pr ",
-    ];
+    let prefixes = ["git add ", "git commit ", "git push ", "github pr "];
     prefixes.iter().any(|p| cmd.starts_with(p))
 }

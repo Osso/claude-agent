@@ -151,8 +151,14 @@ impl JiraHandlerAgent {
         }
         prompt.push_str(&format!("**URL**: {}\n", self.context.web_url));
         prompt.push_str(&format!("**VCS Project**: {}\n", self.context.vcs_project));
-        prompt.push_str(&format!("**Target Branch**: {}\n", self.context.target_branch));
-        prompt.push_str(&format!("**VCS Platform**: {}\n", self.context.vcs_platform));
+        prompt.push_str(&format!(
+            "**Target Branch**: {}\n",
+            self.context.target_branch
+        ));
+        prompt.push_str(&format!(
+            "**VCS Platform**: {}\n",
+            self.context.vcs_platform
+        ));
     }
 
     fn append_description(&self, prompt: &mut String) {

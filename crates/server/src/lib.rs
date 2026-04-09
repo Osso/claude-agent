@@ -17,4 +17,4 @@ pub use queue::{FailedItem, Queue, QueueItem};
 pub use scheduler::Scheduler;
 pub use sentry::{SentryProjectMapping, SentryWebhookEvent};
 pub use sentry_api::SentryClient;
-pub use webhook::{router, AppState};
+pub use webhook::{AppState, router};

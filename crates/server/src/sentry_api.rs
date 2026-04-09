@@ -80,11 +80,16 @@ impl SentryClient {
             anyhow::bail!("Sentry API error: {} - {}", status, body);
         }
 
-        resp.json().await.context("Failed to parse Sentry JSON response")
+        resp.json()
+            .await
+            .context("Failed to parse Sentry JSON response")
     }
 
     /// Send request with retry logic for transient failures.
-    async fn send_with_retry<F, Fut>(&self, make_request: F) -> Result<reqwest::Response, reqwest::Error>
+    async fn send_with_retry<F, Fut>(
+        &self,
+        make_request: F,
+    ) -> Result<reqwest::Response, reqwest::Error>
     where
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
@@ -149,10 +154,8 @@ pub fn format_stacktrace(event: &Value) -> String {
                                 .map(|n| n.to_string())
                                 .unwrap_or_else(|| "?".into());
 
-                            output.push_str(&format!(
-                                "  {} in {}:{}\n",
-                                function, filename, lineno
-                            ));
+                            output
+                                .push_str(&format!("  {} in {}:{}\n", function, filename, lineno));
 
                             // Include context lines if available
                             if let Some(context) = frame["context"].as_array() {
@@ -160,12 +163,11 @@ pub fn format_stacktrace(event: &Value) -> String {
                                     if let (Some(num), Some(code)) =
                                         (line[0].as_u64(), line[1].as_str())
                                     {
-                                        let marker =
-                                            if Some(num) == frame["lineNo"].as_u64() {
-                                                ">"
-                                            } else {
-                                                " "
-                                            };
+                                        let marker = if Some(num) == frame["lineNo"].as_u64() {
+                                            ">"
+                                        } else {
+                                            " "
+                                        };
                                         output.push_str(&format!(
                                             "    {} {:4} | {}\n",
                                             marker, num, code

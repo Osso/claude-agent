@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use axum::{
+    Json, Router,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
 use serde::Serialize;
 
@@ -85,10 +85,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/stats", get(api::queue_stats_handler))
         .route("/api/failed", get(api::list_failed_handler))
         .route("/api/retry/{id}", post(api::retry_handler))
-        .route(
-            "/api/review/github",
-            post(api::queue_github_review_handler),
-        )
+        .route("/api/review/github", post(api::queue_github_review_handler))
         .route("/api/sentry-fix", post(api::queue_sentry_fix_handler))
         .route("/api/jira-fix", post(api::queue_jira_fix_handler))
         .route("/api/check-tokens", get(tokens::check_tokens_handler))

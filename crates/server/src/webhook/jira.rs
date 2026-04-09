@@ -3,17 +3,17 @@
 use std::sync::Arc;
 
 use axum::{
+    Json,
     body::Bytes,
     extract::State,
     http::{HeaderMap, StatusCode},
-    Json,
 };
 use tracing::{debug, error, info, warn};
 
 use crate::jira::{self, JiraProjectMapping, JiraWebhookEvent};
 use crate::payload::JiraTicketPayload;
 
-use super::{branch_exists_on_platform, queued, skipped, AppError, AppState, WebhookResponse};
+use super::{AppError, AppState, WebhookResponse, branch_exists_on_platform, queued, skipped};
 
 /// Jira webhook handler.
 pub(super) async fn jira_webhook_handler(
@@ -83,8 +83,13 @@ async fn queue_jira_webhook_fix(
         })?;
 
     let branch_name = format!("jira-fix/{}", event.issue.key.to_lowercase());
-    if branch_exists_on_platform(state, &mapping.vcs_platform, &mapping.vcs_project, &branch_name)
-        .await?
+    if branch_exists_on_platform(
+        state,
+        &mapping.vcs_platform,
+        &mapping.vcs_project,
+        &branch_name,
+    )
+    .await?
     {
         info!(branch = %branch_name, issue = %event.issue.key, "Fix branch already exists, skipping");
         return Ok(skipped(format!("Branch {} already exists", branch_name)));
@@ -119,12 +124,7 @@ fn build_jira_webhook_payload(
             .as_ref()
             .map(|t| t.name.clone())
             .unwrap_or_else(|| "Unknown".into()),
-        priority: event
-            .issue
-            .fields
-            .priority
-            .as_ref()
-            .map(|p| p.name.clone()),
+        priority: event.issue.fields.priority.as_ref().map(|p| p.name.clone()),
         status: event
             .issue
             .fields
