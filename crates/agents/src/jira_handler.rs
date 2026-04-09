@@ -110,15 +110,14 @@ pub struct JiraTicketContext {
 /// Jira Ticket Handler Agent.
 pub struct JiraHandlerAgent {
     context: JiraTicketContext,
-    #[allow(dead_code)]
-    repo_path: std::path::PathBuf,
+    _repo_path: std::path::PathBuf,
 }
 
 impl JiraHandlerAgent {
     pub fn new(context: JiraTicketContext, repo_path: impl AsRef<Path>) -> Self {
         Self {
             context,
-            repo_path: repo_path.as_ref().to_path_buf(),
+            _repo_path: repo_path.as_ref().to_path_buf(),
         }
     }
 

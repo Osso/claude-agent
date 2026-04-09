@@ -122,15 +122,14 @@ pub struct SentryFixContext {
 /// Sentry Issue Fixer Agent.
 pub struct SentryFixerAgent {
     context: SentryFixContext,
-    #[allow(dead_code)]
-    repo_path: std::path::PathBuf,
+    _repo_path: std::path::PathBuf,
 }
 
 impl SentryFixerAgent {
     pub fn new(context: SentryFixContext, repo_path: impl AsRef<Path>) -> Self {
         Self {
             context,
-            repo_path: repo_path.as_ref().to_path_buf(),
+            _repo_path: repo_path.as_ref().to_path_buf(),
         }
     }
 

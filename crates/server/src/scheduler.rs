@@ -72,8 +72,7 @@ fn build_env_vars(payload_b64: String, jira_access_token: Option<String>) -> Vec
 /// Job scheduler that processes the queue sequentially.
 pub struct Scheduler {
     queue: Queue,
-    #[allow(dead_code)]
-    k8s_client: Client,
+    _k8s_client: Client,
     jobs_api: Api<Job>,
     running: Arc<Mutex<bool>>,
     jira_token_manager: Option<Arc<JiraTokenManager>>,
@@ -89,7 +88,7 @@ impl Scheduler {
 
         Ok(Self {
             queue,
-            k8s_client,
+            _k8s_client: k8s_client,
             jobs_api,
             running: Arc::new(Mutex::new(false)),
             jira_token_manager,
@@ -173,16 +172,10 @@ impl Scheduler {
         let lp = ListParams::default().labels("app=claude-review");
 
         match self.jobs_api.list(&lp).await {
-            Ok(jobs) => {
-                for job in jobs.items {
-                    if let Some(status) = job.status {
-                        if status.active.unwrap_or(0) > 0 {
-                            return true;
-                        }
-                    }
-                }
-                false
-            }
+            Ok(jobs) => jobs
+                .items
+                .into_iter()
+                .any(|job| job.status.and_then(|status| status.active).unwrap_or(0) > 0),
             Err(e) => {
                 warn!(error = %e, "Failed to list jobs");
                 false

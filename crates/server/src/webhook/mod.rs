@@ -110,14 +110,7 @@ pub(crate) struct WebhookResponse {
 }
 
 pub(crate) fn ignored(message: impl Into<String>) -> (StatusCode, Json<WebhookResponse>) {
-    (
-        StatusCode::OK,
-        Json(WebhookResponse {
-            status: "ignored".into(),
-            message: Some(message.into()),
-            job_id: None,
-        }),
-    )
+    ok_with_message("ignored", message.into())
 }
 
 pub(crate) fn queued(job_id: String) -> (StatusCode, Json<WebhookResponse>) {
@@ -146,11 +139,15 @@ pub(crate) fn queued_with_message(
 }
 
 pub(crate) fn skipped(message: impl Into<String>) -> (StatusCode, Json<WebhookResponse>) {
+    ok_with_message("skipped", message.into())
+}
+
+fn ok_with_message(status: &'static str, message: String) -> (StatusCode, Json<WebhookResponse>) {
     (
         StatusCode::OK,
         Json(WebhookResponse {
-            status: "skipped".into(),
-            message: Some(message.into()),
+            status: status.into(),
+            message: Some(message),
             job_id: None,
         }),
     )

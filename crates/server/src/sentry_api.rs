@@ -131,68 +131,93 @@ fn is_retryable(err: &reqwest::Error) -> bool {
 
 /// Extract a formatted stacktrace from a Sentry event.
 pub fn format_stacktrace(event: &Value) -> String {
-    let mut output = String::new();
-
-    // Try to find exception info
-    if let Some(entries) = event["entries"].as_array() {
-        for entry in entries {
-            if entry["type"].as_str() == Some("exception")
-                && let Some(values) = entry["data"]["values"].as_array()
-            {
-                for exc in values {
-                    let exc_type = exc["type"].as_str().unwrap_or("Exception");
-                    let exc_value = exc["value"].as_str().unwrap_or("");
-                    output.push_str(&format!("## {} : {}\n\n", exc_type, exc_value));
-
-                    if let Some(frames) = exc["stacktrace"]["frames"].as_array() {
-                        output.push_str("### Stacktrace (most recent last)\n\n");
-                        for frame in frames {
-                            let filename = frame["filename"].as_str().unwrap_or("?");
-                            let function = frame["function"].as_str().unwrap_or("?");
-                            let lineno = frame["lineNo"]
-                                .as_u64()
-                                .map(|n| n.to_string())
-                                .unwrap_or_else(|| "?".into());
-
-                            output
-                                .push_str(&format!("  {} in {}:{}\n", function, filename, lineno));
-
-                            // Include context lines if available
-                            if let Some(context) = frame["context"].as_array() {
-                                for line in context {
-                                    if let (Some(num), Some(code)) =
-                                        (line[0].as_u64(), line[1].as_str())
-                                    {
-                                        let marker = if Some(num) == frame["lineNo"].as_u64() {
-                                            ">"
-                                        } else {
-                                            " "
-                                        };
-                                        output.push_str(&format!(
-                                            "    {} {:4} | {}\n",
-                                            marker, num, code
-                                        ));
-                                    }
-                                }
-                            }
-                            output.push('\n');
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // If no exception entry, try the message
+    let mut output = format_exception_entries(event);
     if output.is_empty() {
-        if let Some(message) = event["message"].as_str() {
-            output.push_str(&format!("## Message\n\n{}\n", message));
-        } else if let Some(title) = event["title"].as_str() {
-            output.push_str(&format!("## Error\n\n{}\n", title));
-        }
+        append_event_fallback(event, &mut output);
     }
-
     output
+}
+
+fn format_exception_entries(event: &Value) -> String {
+    let mut output = String::new();
+    let Some(entries) = event["entries"].as_array() else {
+        return output;
+    };
+    for entry in entries {
+        append_exception_entry(entry, &mut output);
+    }
+    output
+}
+
+fn append_exception_entry(entry: &Value, output: &mut String) {
+    if entry["type"].as_str() != Some("exception") {
+        return;
+    }
+    let Some(values) = entry["data"]["values"].as_array() else {
+        return;
+    };
+    for exception in values {
+        append_exception_details(exception, output);
+    }
+}
+
+fn append_exception_details(exception: &Value, output: &mut String) {
+    let exception_type = exception["type"].as_str().unwrap_or("Exception");
+    let exception_value = exception["value"].as_str().unwrap_or("");
+    output.push_str(&format!("## {} : {}\n\n", exception_type, exception_value));
+    append_stacktrace_frames(exception, output);
+}
+
+fn append_stacktrace_frames(exception: &Value, output: &mut String) {
+    let Some(frames) = exception["stacktrace"]["frames"].as_array() else {
+        return;
+    };
+    output.push_str("### Stacktrace (most recent last)\n\n");
+    for frame in frames {
+        append_frame(frame, output);
+    }
+}
+
+fn append_frame(frame: &Value, output: &mut String) {
+    let filename = frame["filename"].as_str().unwrap_or("?");
+    let function = frame["function"].as_str().unwrap_or("?");
+    let lineno = frame["lineNo"]
+        .as_u64()
+        .map(|line| line.to_string())
+        .unwrap_or_else(|| "?".into());
+    output.push_str(&format!("  {} in {}:{}\n", function, filename, lineno));
+    append_frame_context(frame, output);
+    output.push('\n');
+}
+
+fn append_frame_context(frame: &Value, output: &mut String) {
+    let Some(context) = frame["context"].as_array() else {
+        return;
+    };
+    for context_line in context {
+        let Some(line_number) = context_line[0].as_u64() else {
+            continue;
+        };
+        let Some(code) = context_line[1].as_str() else {
+            continue;
+        };
+        let marker = if Some(line_number) == frame["lineNo"].as_u64() {
+            ">"
+        } else {
+            " "
+        };
+        output.push_str(&format!("    {} {:4} | {}\n", marker, line_number, code));
+    }
+}
+
+fn append_event_fallback(event: &Value, output: &mut String) {
+    if let Some(message) = event["message"].as_str() {
+        output.push_str(&format!("## Message\n\n{}\n", message));
+        return;
+    }
+    if let Some(title) = event["title"].as_str() {
+        output.push_str(&format!("## Error\n\n{}\n", title));
+    }
 }
 
 /// Extract tags from a Sentry event.

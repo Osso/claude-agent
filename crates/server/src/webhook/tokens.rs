@@ -106,28 +106,29 @@ async fn check_github_token(client: &reqwest::Client, token: &str) -> TokenStatu
 }
 
 async fn check_sentry_token(client: &reqwest::Client, token: &str) -> TokenStatus {
-    let resp = client
+    let response = match client
         .get("https://sentry.io/api/0/organizations/")
         .header("Authorization", format!("Bearer {}", token))
         .send()
-        .await;
-    match resp {
-        Ok(r) if r.status().is_success() => {
-            #[derive(Deserialize)]
-            struct Org {
-                slug: String,
-            }
-            match r.json::<Vec<Org>>().await {
-                Ok(orgs) => {
-                    let slugs: Vec<_> = orgs.iter().map(|o| o.slug.as_str()).collect();
-                    TokenStatus::valid(format!("orgs: {}", slugs.join(", ")))
-                }
-                Err(e) => TokenStatus::invalid(e.to_string()),
-            }
-        }
-        Ok(r) => TokenStatus::invalid(format!("{}", r.status())),
-        Err(e) => TokenStatus::invalid(e.to_string()),
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => return TokenStatus::invalid(error.to_string()),
+    };
+    if !response.status().is_success() {
+        return TokenStatus::invalid(format!("{}", response.status()));
     }
+
+    #[derive(Deserialize)]
+    struct Org {
+        slug: String,
+    }
+    let orgs = match response.json::<Vec<Org>>().await {
+        Ok(orgs) => orgs,
+        Err(error) => return TokenStatus::invalid(error.to_string()),
+    };
+    let slugs: Vec<_> = orgs.iter().map(|org| org.slug.as_str()).collect();
+    TokenStatus::valid(format!("orgs: {}", slugs.join(", ")))
 }
 
 fn check_claude_token(token: &str) -> TokenStatus {

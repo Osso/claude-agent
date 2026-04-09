@@ -46,8 +46,8 @@ struct OAuthTokenResponse {
     access_token: String,
     refresh_token: String,
     expires_in: u64, // seconds
-    #[allow(dead_code)]
-    token_type: String,
+    #[serde(rename = "token_type")]
+    _token_type: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,8 +63,7 @@ struct CachedToken {
 
 /// Manages Jira OAuth tokens with automatic refresh and K8s secret persistence.
 pub struct JiraTokenManager {
-    #[allow(dead_code)]
-    k8s_client: Client,
+    _k8s_client: Client,
     secrets_api: Api<Secret>,
     http_client: HttpClient,
     client_id: String,
@@ -95,7 +94,7 @@ impl JiraTokenManager {
         info!("Jira token manager initialized");
 
         Ok(Self {
-            k8s_client,
+            _k8s_client: k8s_client,
             secrets_api,
             http_client,
             client_id,
@@ -130,7 +129,6 @@ impl JiraTokenManager {
     }
 
     /// Force refresh tokens (call when API returns 401).
-    #[allow(dead_code)]
     pub async fn force_refresh(&self) -> Result<String, TokenError> {
         info!("Force refreshing Jira tokens");
         // Clear cache to force refresh
@@ -311,7 +309,6 @@ impl JiraTokenManager {
     }
 
     /// Check if Jira integration is configured.
-    #[allow(dead_code)]
     pub fn is_configured(&self) -> bool {
         !self.client_id.is_empty() && !self.client_secret.is_empty()
     }

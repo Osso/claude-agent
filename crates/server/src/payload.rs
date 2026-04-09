@@ -99,7 +99,6 @@ impl JobPayload {
     }
 
     /// Get project identifier.
-    #[allow(dead_code)]
     pub fn project(&self) -> &str {
         match self {
             JobPayload::Review(p) => &p.project,

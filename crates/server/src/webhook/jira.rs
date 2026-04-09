@@ -62,35 +62,10 @@ async fn queue_jira_webhook_fix(
     state: &AppState,
     event: &JiraWebhookEvent,
 ) -> Result<(StatusCode, Json<WebhookResponse>), AppError> {
-    let project_key = event
-        .issue
-        .fields
-        .project
-        .as_ref()
-        .map(|p| p.key.as_str())
-        .unwrap_or("");
-
-    let mapping = state
-        .jira_project_mappings
-        .iter()
-        .find(|m| m.jira_project == project_key)
-        .ok_or_else(|| {
-            warn!(project = %project_key, "No project mapping for Jira project");
-            AppError::BadRequest(format!(
-                "No project mapping for Jira project: {}",
-                project_key
-            ))
-        })?;
-
+    let project_key = project_key(event);
+    let mapping = find_project_mapping(state, project_key)?;
     let branch_name = format!("jira-fix/{}", event.issue.key.to_lowercase());
-    if branch_exists_on_platform(
-        state,
-        &mapping.vcs_platform,
-        &mapping.vcs_project,
-        &branch_name,
-    )
-    .await?
-    {
+    if branch_exists_for_mapping(state, mapping, &branch_name).await? {
         info!(branch = %branch_name, issue = %event.issue.key, "Fix branch already exists, skipping");
         return Ok(skipped(format!("Branch {} already exists", branch_name)));
     }
@@ -105,49 +80,108 @@ fn build_jira_webhook_payload(
     event: &JiraWebhookEvent,
     mapping: &JiraProjectMapping,
 ) -> JiraTicketPayload {
-    let description = event
-        .issue
-        .fields
-        .description
-        .as_ref()
-        .map(jira::extract_text_from_adf);
-
     JiraTicketPayload {
         issue_key: event.issue.key.clone(),
         issue_id: event.issue.id.clone(),
         summary: event.issue.fields.summary.clone(),
-        description,
-        issue_type: event
-            .issue
-            .fields
-            .issue_type
-            .as_ref()
-            .map(|t| t.name.clone())
-            .unwrap_or_else(|| "Unknown".into()),
+        description: issue_description(event),
+        issue_type: issue_type_name(event),
         priority: event.issue.fields.priority.as_ref().map(|p| p.name.clone()),
-        status: event
-            .issue
-            .fields
-            .status
-            .as_ref()
-            .map(|s| s.name.clone())
-            .unwrap_or_else(|| "Unknown".into()),
+        status: issue_status_name(event),
         labels: event.issue.fields.labels.clone(),
         web_url: event.issue_web_url(),
         jira_base_url: event.jira_base_url().unwrap_or_default(),
-        trigger_comment: event
-            .comment
-            .as_ref()
-            .map(|c| c.body_as_text())
-            .unwrap_or_default(),
-        trigger_author: event
-            .comment
-            .as_ref()
-            .and_then(|c| c.author.as_ref())
-            .and_then(|a| a.display_name.clone()),
+        trigger_comment: trigger_comment_text(event),
+        trigger_author: trigger_author(event),
         clone_url: mapping.clone_url.clone(),
         target_branch: mapping.target_branch.clone(),
         vcs_platform: mapping.vcs_platform.clone(),
         vcs_project: mapping.vcs_project.clone(),
     }
+}
+
+fn project_key(event: &JiraWebhookEvent) -> &str {
+    event
+        .issue
+        .fields
+        .project
+        .as_ref()
+        .map(|project| project.key.as_str())
+        .unwrap_or("")
+}
+
+fn find_project_mapping<'a>(
+    state: &'a AppState,
+    project_key: &str,
+) -> Result<&'a JiraProjectMapping, AppError> {
+    state
+        .jira_project_mappings
+        .iter()
+        .find(|mapping| mapping.jira_project == project_key)
+        .ok_or_else(|| {
+            warn!(project = %project_key, "No project mapping for Jira project");
+            AppError::BadRequest(format!(
+                "No project mapping for Jira project: {}",
+                project_key
+            ))
+        })
+}
+
+async fn branch_exists_for_mapping(
+    state: &AppState,
+    mapping: &JiraProjectMapping,
+    branch_name: &str,
+) -> Result<bool, AppError> {
+    branch_exists_on_platform(
+        state,
+        &mapping.vcs_platform,
+        &mapping.vcs_project,
+        branch_name,
+    )
+    .await
+}
+
+fn issue_description(event: &JiraWebhookEvent) -> Option<String> {
+    event
+        .issue
+        .fields
+        .description
+        .as_ref()
+        .map(jira::extract_text_from_adf)
+}
+
+fn issue_type_name(event: &JiraWebhookEvent) -> String {
+    event
+        .issue
+        .fields
+        .issue_type
+        .as_ref()
+        .map(|issue_type| issue_type.name.clone())
+        .unwrap_or_else(|| "Unknown".into())
+}
+
+fn issue_status_name(event: &JiraWebhookEvent) -> String {
+    event
+        .issue
+        .fields
+        .status
+        .as_ref()
+        .map(|status| status.name.clone())
+        .unwrap_or_else(|| "Unknown".into())
+}
+
+fn trigger_comment_text(event: &JiraWebhookEvent) -> String {
+    event
+        .comment
+        .as_ref()
+        .map(|comment| comment.body_as_text())
+        .unwrap_or_default()
+}
+
+fn trigger_author(event: &JiraWebhookEvent) -> Option<String> {
+    event
+        .comment
+        .as_ref()
+        .and_then(|comment| comment.author.as_ref())
+        .and_then(|author| author.display_name.clone())
 }
