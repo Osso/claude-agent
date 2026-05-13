@@ -24,7 +24,7 @@ mod openai_agent;
 
 use openai_agent::run_gpt_agent;
 
-const VERSION: &str = "2026.02.12.1";
+const VERSION: &str = "2026.05.13-gpt";
 
 fn main() -> Result<()> {
     let subscriber = FmtSubscriber::builder()

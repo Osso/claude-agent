@@ -34,7 +34,7 @@ use webhook::{AppState, router};
 async fn main() -> Result<()> {
     init_logging();
 
-    const VERSION: &str = "2026.02.12.1";
+    const VERSION: &str = "2026.05.13-gpt";
     info!(version = VERSION, "Claude Agent Server starting");
 
     let state = build_app_state().await?;
