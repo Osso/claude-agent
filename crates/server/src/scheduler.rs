@@ -53,7 +53,7 @@ fn build_env_vars(payload_b64: String, jira_access_token: Option<String>) -> Vec
             value: Some(payload_b64),
             ..Default::default()
         },
-        secret_env_var("CLAUDE_CODE_OAUTH_TOKEN", "claude-oauth-token", false),
+        secret_env_var("OPENAI_API_KEY", "openai-api-key", false),
         secret_env_var("GITHUB_TOKEN", "github-token", true),
         secret_env_var("SENTRY_AUTH_TOKEN", "sentry-auth-token", true),
     ];
@@ -420,5 +420,24 @@ mod tests {
             not_found_count >= threshold,
             "Should fail after 3 not-founds"
         );
+    }
+
+    #[test]
+    fn test_worker_env_includes_openai_api_key_secret() {
+        let env_vars = super::build_env_vars("payload".to_string(), None);
+
+        let openai = env_vars
+            .iter()
+            .find(|var| var.name == "OPENAI_API_KEY")
+            .expect("OPENAI_API_KEY env var");
+        let secret = openai
+            .value_from
+            .as_ref()
+            .and_then(|source| source.secret_key_ref.as_ref())
+            .expect("secret key ref");
+
+        assert_eq!(secret.name, "claude-agent-secrets");
+        assert_eq!(secret.key, "openai-api-key");
+        assert_eq!(secret.optional, Some(false));
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! This is the entry point for review jobs spawned by the scheduler.
 //! It receives job context via environment variable, clones the repo,
-//! and runs the Claude agent which posts its review or fix.
+//! and runs the GPT agent which posts its review or fix.
 
 use std::env;
 use std::path::PathBuf;
@@ -19,6 +19,10 @@ use claude_agent_agents::{
 use claude_agent_core::ReviewContext;
 use claude_agent_server::sentry_api::{SentryClient, extract_tags, format_stacktrace};
 use claude_agent_server::{JiraTicketPayload, JobPayload, SentryFixPayload};
+
+mod openai_agent;
+
+use openai_agent::run_gpt_agent;
 
 const VERSION: &str = "2026.02.12.1";
 
@@ -163,7 +167,7 @@ fn run_review_job(payload: claude_agent_server::ReviewPayload) -> Result<()> {
     let prompt = build_review_prompt(&payload, &agent, &token)?;
 
     info!(action = %payload.action, platform = %payload.platform, "Running Claude");
-    run_claude(&work_dir, &prompt)?;
+    run_gpt_agent(&work_dir, &prompt)?;
 
     info!("Review completed");
     Ok(())
@@ -200,7 +204,7 @@ fn fetch_sentry_details(
     })
 }
 
-/// Clone repo and run Claude for a Sentry fix.
+/// Clone repo and run GPT for a Sentry fix.
 fn clone_and_run_sentry_fix(payload: &SentryFixPayload, context: SentryFixContext) -> Result<()> {
     let work_dir = PathBuf::from("/work/repo");
     std::fs::create_dir_all(&work_dir)?;
@@ -212,8 +216,8 @@ fn clone_and_run_sentry_fix(payload: &SentryFixPayload, context: SentryFixContex
     let agent = SentryFixerAgent::new(context, &work_dir);
     let prompt = agent.build_prompt();
 
-    info!(short_id = %payload.short_id, "Running Claude for Sentry fix");
-    run_claude(&work_dir, &prompt)
+    info!(short_id = %payload.short_id, "Running GPT agent for Sentry fix");
+    run_gpt_agent(&work_dir, &prompt)
 }
 
 /// Run a Sentry fix job.
@@ -291,38 +295,10 @@ fn run_jira_ticket_job(payload: JiraTicketPayload) -> Result<()> {
     let agent = JiraHandlerAgent::new(context, &work_dir);
     let prompt = agent.build_prompt();
 
-    info!(issue_key = %payload.issue_key, "Running Claude for Jira ticket");
-    run_claude(&work_dir, &prompt)?;
+    info!(issue_key = %payload.issue_key, "Running GPT agent for Jira ticket");
+    run_gpt_agent(&work_dir, &prompt)?;
 
     info!("Jira ticket fix completed");
-    Ok(())
-}
-
-/// Run Claude Code with tools enabled. Claude will post the review itself.
-fn run_claude(work_dir: &PathBuf, prompt: &str) -> Result<()> {
-    use std::io::Write;
-    use std::process::Stdio;
-
-    let mut child = Command::new("claude")
-        .arg("-p")
-        .arg("--dangerously-skip-permissions")
-        .current_dir(work_dir)
-        .stdin(Stdio::piped())
-        .spawn()
-        .context("Failed to spawn claude")?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(prompt.as_bytes())
-            .context("Failed to write prompt to stdin")?;
-    }
-
-    let status = child.wait().context("Failed to wait for claude")?;
-
-    if !status.success() {
-        bail!("Claude exited with status {}", status);
-    }
-
     Ok(())
 }
 

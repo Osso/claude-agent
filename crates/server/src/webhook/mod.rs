@@ -34,8 +34,8 @@ pub struct AppState {
     pub sentry_webhook_secret: Option<String>,
     /// Sentry auth token for API calls
     pub sentry_auth_token: Option<String>,
-    /// Claude OAuth token
-    pub claude_token: Option<String>,
+    /// OpenAI API key for worker GPT calls
+    pub openai_api_key: Option<String>,
     /// Sentry organization
     pub sentry_organization: Option<String>,
     /// Sentry project mappings

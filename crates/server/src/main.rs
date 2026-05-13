@@ -102,7 +102,7 @@ async fn build_app_state() -> Result<AppState> {
         github_token: env::var("GITHUB_TOKEN").ok(),
         sentry_webhook_secret: env::var("SENTRY_WEBHOOK_SECRET").ok(),
         sentry_auth_token: env::var("SENTRY_AUTH_TOKEN").ok(),
-        claude_token: env::var("CLAUDE_CODE_OAUTH_TOKEN").ok(),
+        openai_api_key: env::var("OPENAI_API_KEY").ok(),
         sentry_organization: env::var("SENTRY_ORGANIZATION").ok(),
         sentry_project_mappings: parse_sentry_mappings(),
         jira_token_manager,

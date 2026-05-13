@@ -28,8 +28,8 @@ pub(super) async fn check_tokens_handler(
         Some(token) => check_sentry_token(&client, token).await,
         None => TokenStatus::not_configured(),
     };
-    let claude = match &state.claude_token {
-        Some(token) => check_claude_token(token),
+    let openai = match &state.openai_api_key {
+        Some(token) => check_openai_token(token),
         None => TokenStatus::not_configured(),
     };
     let jira = match &state.jira_token_manager {
@@ -40,7 +40,7 @@ pub(super) async fn check_tokens_handler(
     Ok(Json(serde_json::json!({
         "github": github,
         "sentry": sentry,
-        "claude": claude,
+        "openai": openai,
         "jira": jira,
     })))
 }
@@ -131,10 +131,8 @@ async fn check_sentry_token(client: &reqwest::Client, token: &str) -> TokenStatu
     TokenStatus::valid(format!("orgs: {}", slugs.join(", ")))
 }
 
-fn check_claude_token(token: &str) -> TokenStatus {
-    if token.starts_with("sk-ant-oat01-") {
-        TokenStatus::valid("OAuth token (format valid)".to_string())
-    } else if token.starts_with("sk-ant-api") {
+fn check_openai_token(token: &str) -> TokenStatus {
+    if token.starts_with("sk-") {
         TokenStatus::valid("API key (format valid)".to_string())
     } else {
         TokenStatus::invalid("unrecognized token format".to_string())

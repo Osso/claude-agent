@@ -1,6 +1,6 @@
 # Claude Agent
 
-Agentic system that receives webhooks from GitLab to auto-review MRs using Claude Code.
+Agentic system that receives webhooks from GitLab to auto-review MRs using GPT through the OpenAI API.
 
 **Documentation**:
 - [CLAUDE.md](CLAUDE.md) - Development commands and project structure
@@ -12,7 +12,7 @@ Agentic system that receives webhooks from GitLab to auto-review MRs using Claud
 ```
 GitLab Webhook → Server → Redis Queue → Scheduler → K8s Job (Worker)
                                                          ↓
-                                                    Claude Code
+                                                    GPT API worker
                                                          ↓
                                                     GitLab API
 ```
@@ -20,7 +20,7 @@ GitLab Webhook → Server → Redis Queue → Scheduler → K8s Job (Worker)
 ## Components
 
 - **Server**: Receives GitLab webhooks, queues review jobs
-- **Worker**: Runs Claude Code agent for MR review in ephemeral K8s Jobs
+- **Worker**: Runs a GPT agent for MR review in ephemeral K8s Jobs
 - **CLI**: Queue management and manual testing
 
 ## Building
@@ -39,7 +39,9 @@ Environment variables:
 | `WEBHOOK_SECRET` | GitLab webhook token | (required) |
 | `LISTEN_ADDR` | Server listen address | `0.0.0.0:8443` |
 | `GITLAB_TOKEN` | GitLab API token (worker) | (required) |
-| `ANTHROPIC_API_KEY` | Anthropic API key (worker) | (required) |
+| `OPENAI_API_KEY` | OpenAI API key (worker) | (required) |
+| `OPENAI_MODEL` | OpenAI model for worker GPT calls | `gpt-5.4-mini` |
+| `OPENAI_API_BASE` | OpenAI API base URL | `https://api.openai.com/v1` |
 
 ## Deployment
 

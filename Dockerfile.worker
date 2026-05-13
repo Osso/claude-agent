@@ -44,7 +44,7 @@ FROM golang:1.24-bookworm AS jira-builder
 RUN go install github.com/ankitpokhrel/jira-cli/cmd/jira@latest && \
     cp /go/bin/jira /jira-bin
 
-# Runtime stage with Claude Code
+# Runtime stage with GPT API worker
 FROM debian:bookworm-slim
 
 RUN apt-get update && \
@@ -56,14 +56,6 @@ RUN apt-get update && \
         ripgrep \
         php-cli \
         && rm -rf /var/lib/apt/lists/*
-
-# Install Node.js (required for Claude Code)
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
-    apt-get install -y nodejs && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install Claude Code CLI
-RUN npm install -g @anthropic-ai/claude-code
 
 # Install Rust toolchain (for cargo check/clippy in reviews)
 COPY --from=rust:1.92-bookworm /usr/local/rustup /usr/local/rustup
@@ -83,9 +75,6 @@ COPY --from=cli-builder /cli/bin/github /usr/local/bin/github
 COPY --from=cli-builder /cli/bin/sentry /usr/local/bin/sentry
 COPY --from=mago-builder /build/bin/mago /usr/local/bin/mago
 COPY --from=jira-builder /jira-bin /usr/local/bin/jira
-
-# Claude Code configuration
-COPY --chown=app:app worker-home/.claude /home/app/.claude
 
 # Create work directory
 RUN mkdir -p /work && chown app:app /work

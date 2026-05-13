@@ -45,7 +45,7 @@ claude-agent retry <id>                       # Retry failed item
 ```
 GitLab/GitHub/Sentry/Jira Webhook → Server → Redis Queue → Scheduler → K8s Job (Worker)
                                                                         ↓
-                                                                   Claude Code CLI
+                                                                   GPT API worker
                                                                         ↓
                                                                GitLab/GitHub API (create MR/PR)
 ```
@@ -55,7 +55,7 @@ GitLab/GitHub/Sentry/Jira Webhook → Server → Redis Queue → Scheduler → K
 | Crate | Purpose |
 |-------|---------|
 | `core` | Agent loop, event types, state management |
-| `claude` | Claude Code CLI integration (spawn, parse output) |
+| `claude` | Legacy Claude Code CLI integration (spawn, parse output) |
 | `agents` | Agent implementations (MR reviewer, Sentry fixer) |
 | `server` | Webhook handler, Redis queue, K8s scheduler |
 | `worker` | Ephemeral K8s job entry point |
@@ -87,7 +87,9 @@ GitLab/GitHub/Sentry/Jira Webhook → Server → Redis Queue → Scheduler → K
 | `SENTRY_PROJECT_MAPPINGS` | JSON array mapping Sentry projects to repos | Server (optional) |
 | `GITLAB_TOKEN` | GitLab API token | Worker |
 | `GITHUB_TOKEN` | GitHub API token | Worker (optional) |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Claude OAuth token (from `claude setup-token`) | Worker |
+| `OPENAI_API_KEY` | OpenAI API key | Worker |
+| `OPENAI_MODEL` | OpenAI model for worker GPT calls (default: `gpt-5.4-mini`) | Worker (optional) |
+| `OPENAI_API_BASE` | OpenAI API base URL (default: `https://api.openai.com/v1`) | Worker (optional) |
 | `SENTRY_AUTH_TOKEN` | Sentry API token (for fetching events) | Worker (optional) |
 | `REVIEW_PAYLOAD` | Base64-encoded job payload | Worker (set by scheduler) |
 | `JIRA_CLIENT_ID` | Jira OAuth client ID | Server (optional) |
