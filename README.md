@@ -42,6 +42,7 @@ Environment variables:
 | `OPENAI_API_KEY` | OpenAI API key (worker) | (required) |
 | `OPENAI_MODEL` | OpenAI model for worker GPT calls | `gpt-5.4-mini` |
 | `OPENAI_API_BASE` | OpenAI API base URL | `https://api.openai.com/v1` |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Legacy Claude OAuth token kept during migration | (optional) |
 
 ## Deployment
 

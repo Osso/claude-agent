@@ -36,6 +36,8 @@ pub struct AppState {
     pub sentry_auth_token: Option<String>,
     /// OpenAI API key for worker GPT calls
     pub openai_api_key: Option<String>,
+    /// Claude OAuth token kept during GPT migration
+    pub claude_token: Option<String>,
     /// Sentry organization
     pub sentry_organization: Option<String>,
     /// Sentry project mappings

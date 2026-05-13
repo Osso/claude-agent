@@ -54,6 +54,7 @@ fn build_env_vars(payload_b64: String, jira_access_token: Option<String>) -> Vec
             ..Default::default()
         },
         secret_env_var("OPENAI_API_KEY", "openai-api-key", false),
+        secret_env_var("CLAUDE_CODE_OAUTH_TOKEN", "claude-oauth-token", true),
         secret_env_var("GITHUB_TOKEN", "github-token", true),
         secret_env_var("SENTRY_AUTH_TOKEN", "sentry-auth-token", true),
     ];
@@ -439,5 +440,24 @@ mod tests {
         assert_eq!(secret.name, "claude-agent-secrets");
         assert_eq!(secret.key, "openai-api-key");
         assert_eq!(secret.optional, Some(false));
+    }
+
+    #[test]
+    fn test_worker_env_keeps_claude_oauth_secret_for_migration() {
+        let env_vars = super::build_env_vars("payload".to_string(), None);
+
+        let claude = env_vars
+            .iter()
+            .find(|var| var.name == "CLAUDE_CODE_OAUTH_TOKEN")
+            .expect("CLAUDE_CODE_OAUTH_TOKEN env var");
+        let secret = claude
+            .value_from
+            .as_ref()
+            .and_then(|source| source.secret_key_ref.as_ref())
+            .expect("secret key ref");
+
+        assert_eq!(secret.name, "claude-agent-secrets");
+        assert_eq!(secret.key, "claude-oauth-token");
+        assert_eq!(secret.optional, Some(true));
     }
 }

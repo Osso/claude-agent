@@ -90,6 +90,7 @@ GitLab/GitHub/Sentry/Jira Webhook → Server → Redis Queue → Scheduler → K
 | `OPENAI_API_KEY` | OpenAI API key | Worker |
 | `OPENAI_MODEL` | OpenAI model for worker GPT calls (default: `gpt-5.4-mini`) | Worker (optional) |
 | `OPENAI_API_BASE` | OpenAI API base URL (default: `https://api.openai.com/v1`) | Worker (optional) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Legacy Claude OAuth token kept during migration | Worker (optional) |
 | `SENTRY_AUTH_TOKEN` | Sentry API token (for fetching events) | Worker (optional) |
 | `REVIEW_PAYLOAD` | Base64-encoded job payload | Worker (set by scheduler) |
 | `JIRA_CLIENT_ID` | Jira OAuth client ID | Server (optional) |
