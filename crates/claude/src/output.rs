@@ -244,4 +244,96 @@ mod tests {
         assert!(output.is_result());
         assert!(!output.is_error());
     }
+
+    #[test]
+    fn user_input_serializes_role_and_content() {
+        let input = ClaudeInput::user("Review this".into());
+        let value = serde_json::to_value(input).unwrap();
+
+        assert_eq!(value["type"], "user");
+        assert_eq!(value["message"]["role"], "user");
+        assert_eq!(value["message"]["content"], "Review this");
+    }
+
+    #[test]
+    fn assistant_without_text_or_tool_use_returns_none() {
+        let json = r#"{
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "tool_1",
+                    "content": "done",
+                    "is_error": false
+                }]
+            }
+        }"#;
+        let output: ClaudeOutput = serde_json::from_str(json).unwrap();
+
+        assert_eq!(output.text(), None);
+        assert!(output.tool_use().is_none());
+    }
+
+    #[test]
+    fn assistant_without_message_returns_none() {
+        let output: ClaudeOutput = serde_json::from_str(r#"{"type":"assistant"}"#).unwrap();
+
+        assert_eq!(output.text(), None);
+        assert!(output.tool_use().is_none());
+        assert!(output.usage().is_none());
+    }
+
+    #[test]
+    fn usage_is_read_from_assistant_message() {
+        let json = r#"{
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [],
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 3,
+                    "cache_creation_input_tokens": 4,
+                    "cache_read_input_tokens": 5
+                }
+            }
+        }"#;
+        let output: ClaudeOutput = serde_json::from_str(json).unwrap();
+        let usage = output.usage().unwrap();
+
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(usage.output_tokens, 3);
+        assert_eq!(usage.cache_creation_input_tokens, 4);
+        assert_eq!(usage.cache_read_input_tokens, 5);
+    }
+
+    #[test]
+    fn usage_is_read_from_result_message() {
+        let json = r#"{
+            "type": "result",
+            "subtype": "error",
+            "is_error": true,
+            "usage": {"input_tokens": 8, "output_tokens": 2}
+        }"#;
+        let output: ClaudeOutput = serde_json::from_str(json).unwrap();
+        let usage = output.usage().unwrap();
+
+        assert!(output.is_error());
+        assert_eq!(usage.input_tokens, 8);
+        assert_eq!(usage.output_tokens, 2);
+    }
+
+    #[test]
+    fn non_assistant_messages_have_no_text_or_tool_use() {
+        let user: ClaudeOutput =
+            serde_json::from_str(r#"{"type":"user","message":{"role":"user"}}"#).unwrap();
+        let result: ClaudeOutput =
+            serde_json::from_str(r#"{"type":"result","subtype":"success"}"#).unwrap();
+
+        assert_eq!(user.text(), None);
+        assert!(user.tool_use().is_none());
+        assert_eq!(result.text(), None);
+        assert!(result.tool_use().is_none());
+    }
 }

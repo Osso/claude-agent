@@ -312,6 +312,7 @@ fn required_string<'a>(input: &'a serde_json::Value, key: &str) -> Result<&'a st
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::ReviewDecision;
 
     struct MockClaude {
         responses: Vec<Vec<ClaudeResponse>>,
@@ -349,6 +350,38 @@ mod tests {
         }
     }
 
+    struct FailingExecutor;
+
+    #[async_trait]
+    impl ActionExecutor for FailingExecutor {
+        async fn execute(&self, _action: &Action) -> Result<Observation, Error> {
+            Err(Error::ClaudeApi("executor down".into()))
+        }
+    }
+
+    fn approved_result() -> ReviewResult {
+        ReviewResult {
+            decision: ReviewDecision::Approved,
+            summary: "ready".into(),
+            issues: vec![],
+        }
+    }
+
+    fn result_response(result: ReviewResult) -> ClaudeResponse {
+        ClaudeResponse::Result {
+            subtype: "success".into(),
+            result: Some(serde_json::to_string(&result).unwrap()),
+        }
+    }
+
+    fn finish_tool(result: ReviewResult) -> ClaudeResponse {
+        ClaudeResponse::ToolUse {
+            id: "finish-1".into(),
+            name: "finish".into(),
+            input: serde_json::to_value(result).unwrap(),
+        }
+    }
+
     #[tokio::test]
     async fn test_parse_action() {
         let claude = MockClaude {
@@ -361,5 +394,199 @@ mod tests {
         let input = serde_json::json!({"path": "src/main.rs"});
         let action = controller.parse_action("read_file", &input).unwrap();
         assert!(matches!(action, Action::ReadFile { path } if path == "src/main.rs"));
+    }
+
+    #[tokio::test]
+    async fn run_records_text_usage_and_result_response() {
+        let result = approved_result();
+        let claude = MockClaude {
+            responses: vec![vec![
+                ClaudeResponse::Text("Looks good".into()),
+                ClaudeResponse::Usage {
+                    input_tokens: 11,
+                    output_tokens: 7,
+                },
+                result_response(result.clone()),
+            ]],
+            call_count: 0,
+        };
+        let mut controller = AgentController::new(claude, MockExecutor, "system");
+
+        let actual = controller.run("review this").await.unwrap();
+
+        assert_eq!(actual.summary, result.summary);
+        assert!(controller.state.is_finished());
+        assert_eq!(controller.state.metrics.api_calls, 1);
+        assert_eq!(controller.state.metrics.total_tokens, 18);
+        assert_eq!(controller.state.history.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn run_executes_tool_observation_before_finish() {
+        let result = approved_result();
+        let claude = MockClaude {
+            responses: vec![
+                vec![ClaudeResponse::ToolUse {
+                    id: "read-1".into(),
+                    name: "read_file".into(),
+                    input: serde_json::json!({"path": "src/lib.rs"}),
+                }],
+                vec![finish_tool(result.clone())],
+            ],
+            call_count: 0,
+        };
+        let mut controller = AgentController::new(claude, MockExecutor, "system");
+
+        let actual = controller.run("inspect").await.unwrap();
+
+        assert_eq!(actual.summary, result.summary);
+        assert_eq!(controller.state.metrics.tool_calls, 2);
+        assert!(controller.state.history.iter().any(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::Observation(Observation::FileContent { path, content })
+                    if path == "src/lib.rs" && content == "file content"
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn invalid_tool_input_records_error_and_continues() {
+        let result = approved_result();
+        let claude = MockClaude {
+            responses: vec![
+                vec![ClaudeResponse::ToolUse {
+                    id: "bad-1".into(),
+                    name: "read_file".into(),
+                    input: serde_json::json!({}),
+                }],
+                vec![finish_tool(result)],
+            ],
+            call_count: 0,
+        };
+        let mut controller = AgentController::new(claude, MockExecutor, "system");
+
+        controller.run("inspect").await.unwrap();
+
+        assert!(controller.state.history.iter().any(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::Observation(Observation::Error { message })
+                    if message.contains("missing path")
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn executor_error_becomes_observation_and_loop_continues() {
+        let result = approved_result();
+        let claude = MockClaude {
+            responses: vec![
+                vec![ClaudeResponse::ToolUse {
+                    id: "cmd-1".into(),
+                    name: "run_command".into(),
+                    input: serde_json::json!({"cmd": "cargo test"}),
+                }],
+                vec![finish_tool(result)],
+            ],
+            call_count: 0,
+        };
+        let mut controller = AgentController::new(claude, FailingExecutor, "system");
+
+        controller.run("inspect").await.unwrap();
+
+        assert!(controller.state.history.iter().any(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::Observation(Observation::Error { message })
+                    if message.contains("executor down")
+            )
+        }));
+    }
+
+    #[test]
+    fn build_messages_converts_history_events() {
+        let mut state = State::new();
+        state.add_event(Event::message("user", "please review"));
+        state.add_event(Event::message("assistant", "reading"));
+        state.add_event(Event::action(Action::Approve));
+        state.add_event(Event::observation(Observation::Approved));
+        state.add_event(Event::message("system", "ignored"));
+        let controller = AgentController::new(
+            MockClaude {
+                responses: vec![],
+                call_count: 0,
+            },
+            MockExecutor,
+            "system prompt",
+        )
+        .with_state(state);
+
+        let messages = controller.build_messages();
+
+        assert_eq!(messages.len(), 5);
+        assert_eq!(messages[0].role, MessageRole::System);
+        assert_eq!(messages[1].role, MessageRole::User);
+        assert_eq!(messages[2].role, MessageRole::Assistant);
+        assert_eq!(messages[3].role, MessageRole::Assistant);
+        assert_eq!(messages[4].role, MessageRole::User);
+    }
+
+    #[test]
+    fn parse_action_validates_all_tool_shapes() {
+        let controller = AgentController::new(
+            MockClaude {
+                responses: vec![],
+                call_count: 0,
+            },
+            MockExecutor,
+            "test",
+        );
+
+        let run = controller
+            .parse_action("run_command", &serde_json::json!({"cmd": "cargo test"}))
+            .unwrap();
+        assert!(matches!(run, Action::RunCommand { cmd } if cmd == "cargo test"));
+
+        let comment = controller
+            .parse_action("post_comment", &serde_json::json!({"body": "note"}))
+            .unwrap();
+        assert!(matches!(comment, Action::PostComment { body } if body == "note"));
+
+        let changes = controller
+            .parse_action(
+                "request_changes",
+                &serde_json::json!({"reason": "needs tests"}),
+            )
+            .unwrap();
+        assert!(matches!(changes, Action::RequestChanges { reason } if reason == "needs tests"));
+
+        assert!(matches!(
+            controller
+                .parse_action("approve", &serde_json::json!({}))
+                .unwrap(),
+            Action::Approve
+        ));
+        assert!(matches!(
+            controller.parse_action("unknown", &serde_json::json!({})),
+            Err(Error::UnknownTool(tool)) if tool == "unknown"
+        ));
+    }
+
+    #[test]
+    fn parse_finish_rejects_invalid_result_shape() {
+        let controller = AgentController::new(
+            MockClaude {
+                responses: vec![],
+                call_count: 0,
+            },
+            MockExecutor,
+            "test",
+        );
+
+        assert!(matches!(
+            controller.parse_action("finish", &serde_json::json!({"summary": "missing decision"})),
+            Err(Error::InvalidToolInput(message)) if message.contains("invalid result")
+        ));
     }
 }
