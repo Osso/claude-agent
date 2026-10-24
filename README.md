@@ -29,6 +29,12 @@ GitLab Webhook → Server → Redis Queue → Scheduler → K8s Job (Worker)
 cargo build --release
 ```
 
+### Docker CA trust
+
+Both Dockerfiles pin Bookworm `ca-certificates=20250419~deb12u2` before Cargo/Go network operations and in runtime stages. Worker Rust builders share the same Rust 1.92 CA stage; Jira stays on Go 1.24. Mago stays at 1.2.2, built from its SHA-256-pinned original public crate with only `webpki-roots` 1.0.4 → 1.0.10 and `rustls-webpki` 0.103.8 → 0.103.16 updated before locked installation. GitHub/Sentry CLI Git installs retain their existing unlocked resolver policy.
+
+CA-only runtime promotion uses Ops derivative images, not this project's `deploy.sh`, which rebuilds application binaries.
+
 ## Configuration
 
 Environment variables:

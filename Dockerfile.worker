@@ -1,5 +1,13 @@
+# Share build-time OS trust across the three Rust consumers.
+FROM rust:1.92-bookworm AS rust-ca
+
+RUN apt-get -o Acquire::Retries=3 update && \
+    apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+        ca-certificates=20250419~deb12u2 && \
+    rm -rf /var/lib/apt/lists/*
+
 # Build worker binary
-FROM rust:1.92-bookworm AS builder
+FROM rust-ca AS builder
 
 WORKDIR /build
 
@@ -24,22 +32,36 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cp target/release/claude-agent-worker /build/claude-agent-worker-bin
 
 # Build CLI tools from git
-FROM rust:1.92-bookworm AS cli-builder
+FROM rust-ca AS cli-builder
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     cargo install --git https://github.com/Osso/github-cli --root /cli && \
     cargo install --git https://github.com/Osso/sentry-cli --root /cli
 
-# Build mago PHP linter
-FROM rust:1.92-bookworm AS mago-builder
+# Build the original Mago 1.2.2 source with only the CA dependencies refreshed.
+FROM rust-ca AS mago-builder
+
+ADD --checksum=sha256:bc85a36812e1a8f89865d96bf90b53d5b2be693fa3eaefa6d876aa12126c0c52 \
+    https://static.crates.io/crates/mago/mago-1.2.2.crate /tmp/mago-1.2.2.crate
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo install mago@1.2.2 --locked --root /build
+    mkdir -p /mago-source && \
+    tar -xzf /tmp/mago-1.2.2.crate -C /mago-source && \
+    cargo update --manifest-path /mago-source/mago-1.2.2/Cargo.toml \
+        -p webpki-roots@1.0.4 --precise 1.0.10 && \
+    cargo update --manifest-path /mago-source/mago-1.2.2/Cargo.toml \
+        -p rustls-webpki@0.103.8 --precise 0.103.16 && \
+    cargo install --path /mago-source/mago-1.2.2 --locked --root /build
 
 # Build jira CLI (Go)
 FROM golang:1.24-bookworm AS jira-builder
+
+RUN apt-get -o Acquire::Retries=3 update && \
+    apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+        ca-certificates=20250419~deb12u2 && \
+    rm -rf /var/lib/apt/lists/*
 
 RUN go install github.com/ankitpokhrel/jira-cli/cmd/jira@latest && \
     cp /go/bin/jira /jira-bin
@@ -47,9 +69,9 @@ RUN go install github.com/ankitpokhrel/jira-cli/cmd/jira@latest && \
 # Runtime stage with GPT API worker
 FROM debian:bookworm-slim
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        ca-certificates \
+RUN apt-get -o Acquire::Retries=3 update && \
+    apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+        ca-certificates=20250419~deb12u2 \
         git \
         curl \
         jq \
