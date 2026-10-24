@@ -36,8 +36,8 @@ FROM rust-ca AS cli-builder
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo install --git https://github.com/Osso/github-cli --root /cli && \
-    cargo install --git https://github.com/Osso/sentry-cli --root /cli
+    cargo install --git https://github.com/Osso/github-cli --locked --root /cli && \
+    cargo install --git https://github.com/Osso/sentry-cli --locked --root /cli
 
 # Build the original Mago 1.2.2 source with only the CA dependencies refreshed.
 FROM rust-ca AS mago-builder
